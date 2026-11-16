@@ -184,9 +184,16 @@ gets albedo-tinted highlights and reflections and a darker diffuse. Character mo
 models and the view weapon follow the engine's reflectivity instead. Blood II names its texture folders by colour
 family (`GREYS`, `REDS`), so names are a weak signal and the lists are tuned by looking at the log.
 
-Masked world models (fences, grates) are drawn alpha-tested with depth in the opaque pass and take the full
-ray-traced path, lit from either side; the original blends them in list order (a far one can cover a near one). Plain
-glass stays blended, sorted far to near.
+Masked world models (any surface texture with an alpha mask) are split **per texel**, with no classification of
+what the texture depicts: solid texels (mask >= 0.75) are drawn in the opaque pass -- alpha-tested, depth-writing, on
+the full ray-traced path, lit from either side -- and partially transparent texels in the blended pass, lit by the same
+lamps. A fence is solid bars with a thin blended fringe; a glass pane has no solid texels and stays blended. The
+original blends the whole wall without depth in list order, so a far wall or a decal behind it can cover a near one.
+(Two earlier attempts classified whole textures by alpha statistics; both mis-sorted real content and were removed.)
+
+The blended remainder (glass, fringes, sprites) is sorted per object, far to near. That is an approximation: exact
+ordering between overlapping translucent layers needs per-pixel sorting (order-independent transparency), not done.
+Decals (rotatable sprites) are lit by the lamps reaching them instead of their flat object colour.
 
 Invented materials (not game data; `lr_Bump`, `lr_Specular`, 0 turns each off): at texture upload the host generates
 a normal map from the texture's own luminance (smoothed height field, central differences, one per mip) and binds it

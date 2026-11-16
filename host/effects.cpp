@@ -80,8 +80,10 @@ void Renderer::addSprite(const lr::SceneCmd &sc, const lr::ObjectRecord &o, cons
         if (!cix) return;
         for (uint32_t i = 0; i < nv; i++) setVertex(cvx[i], a[i].p, color, a[i].u, a[i].t, normal);
         for (uint32_t i = 0; i + 2 < nv; i++) { cix[i * 3] = cfv; cix[i * 3 + 1] = cfv + i + 1; cix[i * 3 + 2] = cfv + i + 2; }
-        uint32_t cinst = pushInstance(unlitInstance(sp.tex, cfi, sky ? I_SKY : 0));
-        pushDraw(sky ? G_SKY : noZ ? G_SPRITES_NOZ : G_SPRITES, (sky || noZ) ? P_NOZ : P_BLEND, cinst, cfi, (nv - 2) * 3, sky ? 1 : 0);
+        uint32_t cinst = pushInstance(unlitInstance(sp.tex, cfi, sky ? I_SKY : I_DECAL));
+        float cdist = length(V3{o.pos.x, o.pos.y, o.pos.z} - camPos);
+        pushDraw(sky ? G_SKY : noZ ? G_SPRITES_NOZ : G_TRANS_WORLDMODELS, (sky || noZ) ? P_NOZ : P_BLEND, cinst, cfi, (nv - 2) * 3, sky ? 1 : 0,
+                 (sky || noZ) ? 0.0f : cdist);
         return;
     }
     uint32_t fv, fi;
@@ -115,8 +117,12 @@ void Renderer::addSprite(const lr::SceneCmd &sc, const lr::ObjectRecord &o, cons
     for (int i = 0; i < 4; i++) setVertex(v[i], c[i], color, uv[i][0], uv[i][1], n);
     const uint32_t q[6] = {0, 1, 2, 0, 2, 3};
     for (int i = 0; i < 6; i++) idx[i] = fv + q[i];
-    uint32_t inst = pushInstance(unlitInstance(sp.tex, fi, sky ? I_SKY : 0));
-    pushDraw(sky ? G_SKY : noZ ? G_SPRITES_NOZ : G_SPRITES, noZ ? P_NOZ : P_BLEND, inst, fi, 6, sky ? 1 : 0);
+    // a rotatable sprite is a flat quad placed in the world (a decal even when it has no clip polygon); billboards are effects
+    uint32_t inst = pushInstance(unlitInstance(sp.tex, fi, sky ? I_SKY : (o.flags & lr::FLAG_ROTATEABLESPRITE) ? I_DECAL : 0));
+    // sorted far to near together with the blended walls (glass): the original draws every sprite after every
+    // blended wall, so a decal behind a pane shows through it
+    float sdist = length(V3{o.pos.x, o.pos.y, o.pos.z} - camPos);
+    pushDraw(sky ? G_SKY : noZ ? G_SPRITES_NOZ : G_TRANS_WORLDMODELS, noZ ? P_NOZ : P_BLEND, inst, fi, 6, sky ? 1 : 0, (sky || noZ) ? 0.0f : sdist);
 }
 
 void Renderer::addParticles(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const uint8_t *payload) {

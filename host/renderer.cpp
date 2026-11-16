@@ -477,16 +477,16 @@ void Renderer::onTexUpload(const lr::TexUploadCmd &c, const uint8_t *p) {
     {   // what the texture shows on average, and what its fullbright texels show (for emitters)
         if (texStats.size() < kMaxTextures) texStats.resize(kMaxTextures);
         TexStats ts = {};
-        uint32_t n0 = c.width * c.height, nfb = 0, nSoft = 0;
+        uint32_t n0 = c.width * c.height, nfb = 0, nSoft = 0, nClear = 0, nSolid = 0;
         double sum[3] = {}, fb[3] = {};
         const uint8_t *idx0 = pal + 1024;
         for (uint32_t i = 0; i < n0; i++) {
             const uint8_t *o = &px[(size_t)i * 4];
             for (int k = 0; k < 3; k++) sum[k] += o[k];
             if (fullbright && !alphaMask && idx0[i] >= 246) { for (int k = 0; k < 3; k++) fb[k] += o[k]; nfb++; }
-            if (alphaMask && o[3] > 24 && o[3] < 232) nSoft++;
+            if (alphaMask) { if (o[3] <= 24) nClear++; else if (o[3] >= 232) nSolid++; else nSoft++; }
         }
-        ts.softAlpha = (float)nSoft / n0;
+        ts.softAlpha = (float)nSoft / n0; ts.clearAlpha = (float)nClear / n0; ts.solidAlpha = (float)nSolid / n0;
         for (int k = 0; k < 3; k++) { ts.avg[k] = (float)(sum[k] / (255.0 * n0)); ts.fbAvg[k] = nfb ? (float)(fb[k] / (255.0 * nfb)) : 0; }
         ts.fbCoverage = (float)nfb / n0;
         texStats[c.id] = ts;
@@ -528,7 +528,8 @@ void Renderer::onTexUpload(const lr::TexUploadCmd &c, const uint8_t *p) {
                       (sat < 0.12f && smooth > 0.6f && mx > 0.15f && mx < 0.7f));
         if (matte) { ti.flags |= T_MATTE; ti.spec = std::min(ti.spec, 0.04f); ti.gloss = 0; }
         if (metal) { ti.flags |= T_METAL; ti.spec = std::max(ti.spec, 0.55f); ti.shininess = std::max(ti.shininess, 36.0f); ti.gloss = std::max(ti.gloss, 0.3f); }
-        Log("tex %u %s %ux%u noise %.3f smooth %.2f sat %.2f avg %.2f softA %.2f%s%s -> spec %.2f shin %.0f gloss %.2f", c.id, c.name, c.width, c.height, noise, smooth, sat, mx, st.softAlpha,
+        Log("tex %u %s %ux%u noise %.3f smooth %.2f sat %.2f avg %.2f alpha soft %.2f clear %.2f solid %.2f%s%s -> spec %.2f shin %.0f gloss %.2f", c.id, c.name, c.width, c.height, noise, smooth, sat, mx, st.softAlpha,
+            st.clearAlpha, st.solidAlpha,
             metal ? " METAL" : "", matte ? " MATTE" : "", ti.spec, ti.shininess, ti.gloss);
     }
     // ---- generated normal map: the texture's luminance as a height field (slightly smoothed), central differences
@@ -990,32 +991,36 @@ void Renderer::addObject(const lr::SceneCmd &sc, const lr::ObjectRecord &o) {
         // d3d.ren: translucent iff the first surface has the translucent flag (object alpha is not consulted for the
         // choice); translucent and sky world models are one pre-lit Gouraud pass, two-sided, without lightmaps.
         bool translucent = b.translucent;
-        // Alpha-masked walls (fences, grates: every texel is either there or not) are cut-outs. Drawn alpha-tested with
-        // depth they sort correctly against everything -- the original blends them in list order, so a far one can cover
-        // a near one -- and they go through the same ray-traced lighting as solid geometry. Plain glass stays blended,
-        // sorted far to near.
-        // A cut-out's mask is all-or-nothing; glass has partial alpha across its texels and must stay blended (alpha
-        // testing it at 50% would discard the whole pane).
-        bool masked = false, hardMask = true;
+        // Masked walls (any surface texture with an alpha mask) are split PER TEXEL, with no guess about what the
+        // texture depicts: solid texels are opaque matter and are drawn in the opaque pass (alpha test, depth, the full
+        // ray-traced lighting, lit from either side); partially transparent texels are drawn in the blended pass. A
+        // fence comes out as solid bars with a thin blended fringe, a glass pane has no solid texels and stays blended.
+        // The original blends the whole wall without depth in list order, so a far one, or a decal behind it, can
+        // cover a near one.
+        bool masked = false;
         if (translucent && !sky)
-            for (uint32_t si = b.firstSurface; si < b.firstSurface + b.nSurfaces && si < surfaces.size(); si++) {
-                uint32_t t = surfaces[si].tex < kMaxTextures ? surfaces[si].tex : 0;
-                if (!(texInfoCpu[t].flags & T_ALPHA)) continue;
-                masked = true;
-                if (t < texStats.size() && texStats[t].softAlpha > 0.15f) hardMask = false;
-            }
-        bool cutout = masked && hardMask && o.rgba[3] >= 250;
+            for (uint32_t si = b.firstSurface; si < b.firstSurface + b.nSurfaces && si < surfaces.size() && !masked; si++)
+                masked = (texInfoCpu[surfaces[si].tex < kMaxTextures ? surfaces[si].tex : 0].flags & T_ALPHA) != 0;
+        bool split = masked && o.rgba[3] >= 250;
         gi.firstIndex = b.firstIndex; gi.triBase = b.triBase;
-        // sky: always front faces only (seen from the sky camera), even when translucent (d3d.ren 0x1b9c0)
-        gi.flags = I_WORLD | (sky ? (I_SKY | I_PRELIT) : 0) |
-                   (cutout ? (I_PRELIT | I_TWOSIDED | I_ALPHATEST) : translucent ? (I_PRELIT | I_BLEND | (sky ? 0 : I_TWOSIDED)) : 0);
         gi.color[0] = gi.color[1] = gi.color[2] = 1; gi.color[3] = translucent ? o.rgba[3] / 255.0f : 1.0f;
-        uint32_t inst = pushInstance(gi);
         V3 centre = xf.point((b.bmin + b.bmax) * 0.5f);
         float dist = length(centre - camPos);
-        bool blended = translucent && !cutout;
-        pushDraw(sky ? G_SKY : blended ? G_TRANS_WORLDMODELS : G_SOLID_WORLDMODELS, blended ? P_BLEND : P_OPAQUE,
-                 inst, b.firstIndex, b.nTris * 3, sky ? 1 : 0, (blended && !sky) ? dist : 0.0f);
+        uint32_t inst;
+        if (split) {
+            gi.flags = I_WORLD | I_PRELIT | I_TWOSIDED | I_ALPHATEST;
+            inst = pushInstance(gi);
+            pushDraw(G_SOLID_WORLDMODELS, P_OPAQUE, inst, b.firstIndex, b.nTris * 3, 0);
+            GInstance soft = gi;
+            soft.flags = I_WORLD | I_PRELIT | I_TWOSIDED | I_BLEND | I_SOFT;
+            pushDraw(G_TRANS_WORLDMODELS, P_BLEND, pushInstance(soft), b.firstIndex, b.nTris * 3, 0, dist);
+        } else {
+            // sky: always front faces only (seen from the sky camera), even when translucent (d3d.ren 0x1b9c0)
+            gi.flags = I_WORLD | (sky ? (I_SKY | I_PRELIT) : 0) | (translucent ? (I_PRELIT | I_BLEND | (sky ? 0 : I_TWOSIDED)) : 0);
+            inst = pushInstance(gi);
+            pushDraw(sky ? G_SKY : translucent ? G_TRANS_WORLDMODELS : G_SOLID_WORLDMODELS, translucent ? P_BLEND : P_OPAQUE,
+                     inst, b.firstIndex, b.nTris * 3, sky ? 1 : 0, (translucent && !sky) ? dist : 0.0f);
+        }
         if (gfx.rt && !sky && (!translucent || masked) && b.blas.as && tlasInstances.size() < kMaxTlas) {
             VkAccelerationStructureInstanceKHR ti = {};
             memcpy(ti.transform.matrix, xf.m, 48);

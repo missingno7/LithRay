@@ -410,7 +410,10 @@ void main() {
     // set on the fullbright palette entries only, so in a blended pass it is the texel's opacity (the sky's moon).
     bool alphaOpacity = (tflags & T_ALPHA) != 0u || ((tflags & T_FULLBRIGHT) != 0u && (I.flags & I_BLEND) != 0u);
     if (alphaOpacity) alpha *= tx.a;
-    if ((I.flags & I_ALPHATEST) != 0u && tx.a < 0.5) discard;
+    // masked walls are split per texel: solid texels in the opaque pass, partially transparent ones in the blended pass
+    float maskA = (tflags & T_ALPHA) != 0u ? tx.a : 1.0;
+    if ((I.flags & I_ALPHATEST) != 0u && maskA < 0.75) discard;
+    if ((I.flags & I_SOFT) != 0u && maskA >= 0.75) discard;
 
     float rtOn = 0.0;
 #ifdef RT
@@ -477,7 +480,7 @@ void main() {
 #ifdef RT
     {
         // (alpha-tested cut-outs are pre-lit in the classic modes but take the full ray-traced path here)
-        bool cutout = (I.flags & I_ALPHATEST) != 0u;
+        bool cutout = (I.flags & I_ALPHATEST) != 0u;       // the solid texels of a masked wall
         bool surfWorld = world && (I.flags & (I_SKY | I_BLEND)) == 0u && ((I.flags & I_PRELIT) == 0u || cutout) && (sflags & SURF_BRIGHT) == 0u;
         bool surfModel = (I.flags & I_MODEL) != 0u && (I.flags & (I_CLOSE | I_SKY)) == 0u && I.color.a >= 0.999;
         if (rtOn > 0.5 && frame.gi.x > 0.5 && frame.lampCount > 0u && (surfWorld || surfModel)) {
@@ -514,6 +517,23 @@ void main() {
     // composed pixels are lit in linear light in the modern look; everything else is converted when written
     vec3 alb = (look && composed) ? pow(tx.rgb, vec3(2.2)) : tx.rgb;
     if (composed && (tflags & T_METAL) != 0u) alb *= 0.72;      // metals reflect more than they scatter
+    // decals take the scene's light instead of their own flat colour (ray-traced modes): the lamps reaching the spot,
+    // with a few shadow rays, plus the level ambient
+    bool decalLit = false;
+#ifdef RT
+    if (rtOn > 0.5 && frame.gi.x > 0.5 && frame.lampCount > 0u && (I.flags & (I_DECAL | I_SOFT)) != 0u) {
+        decalLit = true;
+        rngState = (uint(gl_FragCoord.x) * 1973u + uint(gl_FragCoord.y) * 9277u) | 1u;
+        vec3 dspec;
+        vec3 dscale = look ? frame.lightScale.rgb * 1.3 : frame.lightScale.rgb * frame.lightScale.a;
+        // (the blended part of a masked wall is lit like its solid part: from either side, not by its baked colours)
+        bool softPart = (I.flags & I_SOFT) != 0u;
+        vec3 base = softPart ? vec3(1.0) : I.color.rgb * vColor.rgb;
+        light = base * (frame.ambient.rgb * (look ? 0.26 : 0.5) +
+                lampDirect(vWorld, geoN, vWorld + geoN * 1.0, 1u, 3, v, 16.0, softPart, dspec)) * dscale + dynLight;
+        alb = look ? pow(tx.rgb, vec3(2.2)) : tx.rgb;
+    }
+#endif
     vec3 color = alb * light + specOut;
     // the texture's fullbright layer; in the composed path the resolve applies it, so it bypasses the light filter
     float fbMask = ((tflags & T_FULLBRIGHT) != 0u && !alphaOpacity) ? tx.a : 0.0;
@@ -604,10 +624,10 @@ void main() {
         outLight = vec4((dbg == 2 ? light : color) / (dbg == 2 ? vec3(1.0) : albedo), 1.0);
         outIndirect = vec4(bounceOut, 1.0 + scatterOut);        // a >= 1 marks a composed pixel; the excess is in-scattered light
     } else {
-        if (look) {
+        if (look && !decalLit) {
             // display-referred result -> linear; things that glow get room above white so they bloom
             float glow = 1.0 + 2.2 * fbMask + ((sflags & SURF_BRIGHT) != 0u ? 1.5 : 0.0) +
-                         (((I.flags & I_UNLIT) != 0u && (I.flags & (I_SKY | I_WATER)) == 0u) ? 0.5 : 0.0);
+                         (((I.flags & I_UNLIT) != 0u && (I.flags & (I_SKY | I_WATER | I_DECAL)) == 0u) ? 0.5 : 0.0);
             color = pow(max(color, vec3(0.0)), vec3(2.2)) * glow;
         }
         outColor = vec4(color, alpha);

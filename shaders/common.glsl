@@ -19,6 +19,8 @@
 #define I_CLOSE      0x200u         // view model: no ray-traced self effects from the world
 #define I_TWOSIDED   0x400u         // translucent world models: no back-face cull
 #define I_PRELIT     0x800u         // world geometry lit by its vertex colours only (translucent and sky world models)
+#define I_DECAL      0x2000u        // a sprite lying on a surface (blood, scorch marks): lit by the scene like that surface
+#define I_SOFT       0x4000u        // blended pass of a masked wall: only its partially transparent texels (solid ones are drawn opaque)
 #define I_BLEND      0x1000u        // drawn alpha-blended: the texture's alpha (mask or fullbright bit) is opacity, as in D3D
 
 // texInfo flags

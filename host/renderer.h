@@ -35,7 +35,7 @@ static_assert(sizeof(GVertex) == 48 && sizeof(GInstance) == 160, "gpu layout");
 
 enum : uint32_t { I_WORLD = 1, I_CONTAINER = 2, I_MODEL = 4, I_UNLIT = 8, I_ALPHATEST = 0x10, I_NOTEXTURE = 0x20, I_CHROME = 0x40,
                   I_WATER = 0x80, I_SKY = 0x100, I_CLOSE = 0x200,
-                  I_TWOSIDED = 0x400, I_PRELIT = 0x800, I_BLEND = 0x1000 };
+                  I_TWOSIDED = 0x400, I_PRELIT = 0x800, I_BLEND = 0x1000, I_DECAL = 0x2000, I_SOFT = 0x4000 };
 enum : uint32_t { T_FULLBRIGHT = 1, T_ALPHA = 2, T_METAL = 4, T_MATTE = 8 };
 constexpr uint32_t kMaxTextures = 4096, kTexLightmap = 4095, kMaxLamps = 2048;
 
@@ -159,7 +159,8 @@ private:
     float lampCalibration = 1.0f;
     std::vector<EmitPoly> emitPolys;
     size_t fileLampCount = 0; bool emittersBuilt = false; float emittersStrength = -1;
-    struct TexStats { float avg[3], fbAvg[3], fbCoverage; float softAlpha; };    // softAlpha: share of texels with partial alpha
+    // alpha mask shape: share of texels that are partial / fully clear / fully solid
+    struct TexStats { float avg[3], fbAvg[3], fbCoverage; float softAlpha, clearAlpha, solidAlpha; };
     std::vector<TexStats> texStats;
     float levelAmbient[3] = {};
     V3 worldMin, worldMax;
