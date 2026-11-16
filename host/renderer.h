@@ -23,6 +23,8 @@ struct GLampGrid { float origin[4]; int32_t dims[3]; uint32_t count; };
 struct GFrame {
     M4 viewProj[3]; M4 prevViewProj[3];
     float camPos[4], fogColor[4], fogParams[4], lightScale[4], modelLightDir[4], rt[4], misc[4], skyColor[4], viewport[4];
+    float gi[4];                // full ray-traced lighting: enabled, indirect scale, direct scale, lamp radius
+    float skyEye[4];
     float ambient[4];           // rgb: the level's lightmap ambient (minimum texel), a: lamp shadows enabled
     GLampGrid lampGrid;
     uint32_t nLights, pad[3];
@@ -30,7 +32,8 @@ struct GFrame {
 static_assert(sizeof(GVertex) == 48 && sizeof(GInstance) == 160, "gpu layout");
 
 enum : uint32_t { I_WORLD = 1, I_CONTAINER = 2, I_MODEL = 4, I_UNLIT = 8, I_ALPHATEST = 0x10, I_NOTEXTURE = 0x20, I_CHROME = 0x40,
-                  I_WATER = 0x80, I_SKY = 0x100, I_CLOSE = 0x200 };
+                  I_WATER = 0x80, I_SKY = 0x100, I_CLOSE = 0x200,
+                  I_TWOSIDED = 0x400, I_PRELIT = 0x800, I_BLEND = 0x1000 };
 enum : uint32_t { T_FULLBRIGHT = 1, T_ALPHA = 2 };
 constexpr uint32_t kMaxTextures = 4096, kTexLightmap = 4095, kMaxLamps = 2048;
 
@@ -49,6 +52,7 @@ struct BspGpu {
     uint32_t firstIndex = 0, nTris = 0, triBase = 0;            // opaque range
     uint32_t skyFirstIndex = 0, skyTris = 0, skyTriBase = 0;    // sky portal polys (depth only)
     bool translucent = false;
+    bool masked = false;        // translucent with alpha-masked textures: casts alpha-tested shadows
     Accel blas;
     V3 bmin, bmax;
 };
@@ -97,6 +101,8 @@ private:
     uint32_t *allocDynIndices(uint32_t n, uint32_t &firstIndex);
     V3 sampleGrid(V3 pos) const;
     void buildAccel(VkCommandBuffer cmd);
+    void drawGroups(bool opaquePass, bool rtOn);
+    VkPipeline makeFullscreenPipeline(const uint32_t *fs, size_t fsBytes, VkFormat f0, VkFormat f1);
     void writeTextureSlot(uint32_t slot, VkImageView view);
     void saveScreenshot();
     void loadLamps(const char *worldFile, const char *rezSources);
@@ -106,9 +112,9 @@ private:
     // device objects
     VkDescriptorSetLayout sceneLayout = VK_NULL_HANDLE, postLayout = VK_NULL_HANDLE;
     VkDescriptorPool descPool = VK_NULL_HANDLE;
-    VkDescriptorSet sceneSet = VK_NULL_HANDLE, postSet[2] = {};
+    VkDescriptorSet sceneSet = VK_NULL_HANDLE, postSet[2] = {}, composeSet[2] = {};
     VkPipelineLayout scenePL = VK_NULL_HANDLE, postPL = VK_NULL_HANDLE;
-    VkPipeline pipes[2][P_COUNT] = {}, postPipe = VK_NULL_HANDLE;
+    VkPipeline pipes[2][P_COUNT] = {}, postPipe = VK_NULL_HANDLE, composePipe = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE, clampSampler = VK_NULL_HANDLE, nearestSampler = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -117,6 +123,8 @@ private:
     bool frameInFlight = false;
 
     Image sceneColor, sceneAux, sceneDepth, history[2], overlayImg, white;
+    Image sceneLight, lightHist[2], litColor;       // full ray-traced lighting: raw estimate, accumulated history, resolved scene
+    bool lightHistValid = false;
     Image textures[kMaxTextures];
     std::vector<GTexInfo> texInfoCpu;
     Buffer lampBuf, lampDataBuf;
@@ -135,6 +143,7 @@ private:
     std::string worldName;
     std::vector<GLamp> lamps; std::vector<uint32_t> lampCells, lampIndices; GLampGrid lampGrid = {};
     float levelAmbient[3] = {};
+    V3 worldMin, worldMax;
     std::unordered_map<uint32_t, int> loggedKeys;
 
     std::unordered_map<uint32_t, ModelDef> models;

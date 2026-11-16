@@ -33,7 +33,9 @@ static LONG WINAPI CrashFilter(EXCEPTION_POINTERS *e) {
 int main(int argc, char **argv) {
     DWORD gamePid = 0;
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "--game-pid")) gamePid = strtoul(argv[i + 1], nullptr, 10);
-    g_log = fopen("lithray_host.log", "w");
+    char logName[MAX_PATH] = "lithray_host.log";
+    GetEnvironmentVariableA("LITHRAY_HOST_LOG", logName, sizeof(logName));
+    g_log = fopen(logName, "w");
     SetUnhandledExceptionFilter(CrashFilter);
     if (!gamePid) { Log("usage: lithray_host --game-pid <pid> (started by lithray.ren)"); return 1; }
 

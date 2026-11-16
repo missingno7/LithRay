@@ -116,7 +116,7 @@ void Renderer::addSprite(const lr::SceneCmd &sc, const lr::ObjectRecord &o, cons
     const uint32_t q[6] = {0, 1, 2, 0, 2, 3};
     for (int i = 0; i < 6; i++) idx[i] = fv + q[i];
     uint32_t inst = pushInstance(unlitInstance(sp.tex, fi, sky ? I_SKY : 0));
-    pushDraw(sky ? G_SKY : noZ ? G_SPRITES_NOZ : G_SPRITES, (sky || noZ) ? P_NOZ : P_BLEND, inst, fi, 6, sky ? 1 : 0);
+    pushDraw(sky ? G_SKY : noZ ? G_SPRITES_NOZ : G_SPRITES, noZ ? P_NOZ : P_BLEND, inst, fi, 6, sky ? 1 : 0);
 }
 
 void Renderer::addParticles(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const uint8_t *payload) {
@@ -206,7 +206,9 @@ void Renderer::addPolyGrid(const lr::SceneCmd &sc, const lr::ObjectRecord &o, co
 
     bool sky = (o.role & lr::OBJ_SKY) != 0, translucent = o.rgba[3] != 255;
     GInstance gi = unlitInstance(tex, fi, I_WATER | (sky ? I_SKY : 0));
-    gi.light[3] = 0.55f;        // reflectivity when ray tracing is on (replaces d3d.ren's environment-map pass)
+    // d3d.ren draws an environment-map pass on polygrids that have one (alone with FLAG_ENVIRONMENTMAPONLY): with ray
+    // tracing that pass becomes a real reflection; grids without an environment map do not reflect
+    gi.light[3] = pg.envTex ? ((o.flags & lr::FLAG_ENVIRONMENTMAPONLY) ? 0.9f : 0.5f) : 0.0f;
     History &hist = historyMap[o.key];
     if (hist.frame + 1 == frameIndex && hist.nVertices == W * H) gi.prevVertexDelta = (int32_t)hist.firstVertex - (int32_t)fv;
     hist.firstVertex = fv; hist.nVertices = W * H; hist.frame = frameIndex;

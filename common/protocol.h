@@ -11,7 +11,7 @@
 namespace lr {
 
 constexpr uint32_t kMagic = 0x5941524c;      // 'LRAY'
-constexpr uint32_t kVersion = 6;
+constexpr uint32_t kVersion = 8;
 constexpr uint32_t kHeaderSize = 4096;
 constexpr uint32_t kArenaSize = 64u << 20;
 
@@ -87,6 +87,7 @@ struct WorldBeginCmd {
     LightGrid grid;
     char     worldName[100];
     uint32_t pad;
+    Vec3     worldMin, worldMax;    // the main BSP's box (WorldBsp +0xe0): the sky camera is placed by the view's fraction through it
     char     worldFile[128];        // the level file the server loaded ("Worlds\x.dat"), "" when unknown
     char     rezSources[512];       // the game's -rez sources in command-line order, ';' separated (later overrides earlier)
     // then: WorldBsp[nBsps], WorldSurface[nSurfaces], WorldPoly[nPolys], WorldVertex[nVertices],
@@ -163,7 +164,8 @@ struct Settings {
     float rt;               // 0 raster baseline, 1 ray-traced lighting
     float rtShadows, rtReflections, rtAO, rtGI;
     float vsync, maxFps, debugView, exposure, widescreen;
-    float reserved[12];
+    float giDirect, giIndirect, giHistory;      // full ray-traced lighting: lamp scale, bounce scale, history weight
+    float reserved[9];
 };
 
 struct SceneCmd {

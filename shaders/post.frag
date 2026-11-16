@@ -1,7 +1,7 @@
 #version 460
 // Resolve + present: temporally accumulated, depth-aware filtered ambient occlusion applied to the scene, the
 // camera's light add (screen flashes), then the engine's 2D layer (menus, HUD, console) on top.
-layout(set = 0, binding = 0) uniform sampler2D sceneColor;
+layout(set = 0, binding = 0) uniform sampler2D sceneColor;   // the lit scene (after the lighting resolve and the translucent pass)
 layout(set = 0, binding = 1) uniform sampler2D sceneAux;     // rg motion, b raw AO
 layout(set = 0, binding = 2) uniform sampler2D sceneDepth;
 layout(set = 0, binding = 3) uniform sampler2D aoHistory;    // r = accumulated AO, g = linear depth / far

@@ -17,6 +17,9 @@
 #define I_WATER      0x80u          // polygrid surface
 #define I_SKY        0x100u
 #define I_CLOSE      0x200u         // view model: no ray-traced self effects from the world
+#define I_TWOSIDED   0x400u         // translucent world models: no back-face cull
+#define I_PRELIT     0x800u         // world geometry lit by its vertex colours only (translucent and sky world models)
+#define I_BLEND      0x1000u        // drawn alpha-blended: the texture's alpha (mask or fullbright bit) is opacity, as in D3D
 
 // texInfo flags
 #define T_FULLBRIGHT 0x1u           // alpha marks fullbright texels
@@ -50,6 +53,8 @@ layout(set = 0, binding = 1, scalar, row_major) uniform Frame {
     vec4 misc;                      // frame index, debug view, time, exposure
     vec4 skyColor;                  // what rays see when they leave the world
     vec4 viewport;                  // scene viewport in pixels: x, y, w, h
+    vec4 gi;                        // full ray-traced lighting: enabled, indirect scale, direct scale, lamp radius
+    vec4 skyEye;                    // the sky camera's position (sky objects are culled and fogged from it)
     vec4 ambient;                   // rgb: level lightmap ambient, a: static lamp shadows on
     vec4 lampGridOrigin;            // xyz: grid origin, w: cell size
     ivec3 lampGridDims; uint lampCount;

@@ -147,6 +147,7 @@ static void SendWorld(LT1MainWorld *world) {
     memcpy(c->grid.dims, lt.m_Dims, sizeof(c->grid.dims));
     c->grid.blockSize = V(lt.m_BlockSize); c->grid.lookupStart = V(lt.m_LookupStart); c->grid.nSamples = nSamples;
     strncpy(c->worldName, world->m_pWorldBsp->m_WorldName, sizeof(c->worldName) - 1);
+    c->worldMin = V(world->m_pWorldBsp->m_MinBox); c->worldMax = V(world->m_pWorldBsp->m_MaxBox);
     LoadedWorldFile(c->worldFile, sizeof(c->worldFile));
     RezSources(c->rezSources, sizeof(c->rezSources));
     uint8_t *p = (uint8_t *)(c + 1);
@@ -539,7 +540,8 @@ static void FillSettings(lr::Settings &s) {
     s.drawSprites = CVar("DrawSprites", 1); s.drawParticles = CVar("DrawParticles", 1); s.drawPolyGrids = CVar("DrawPolyGrids", 1);
     s.drawLineSystems = CVar("DrawLineSystems", 1); s.drawWorldModels = CVar("DrawWorldModels", 1);
     s.rt = CVar("lr_RT", 1); s.rtShadows = CVar("lr_RTShadows", 1); s.rtReflections = CVar("lr_RTReflections", 1);
-    s.rtAO = CVar("lr_RTAO", 1); s.rtGI = CVar("lr_RTGI", 0);
+    s.rtAO = CVar("lr_RTAO", 1); s.rtGI = CVar("lr_RTGI", 1);
+    s.giDirect = CVar("lr_GIDirect", 0.7f); s.giIndirect = CVar("lr_GIIndirect", 1); s.giHistory = CVar("lr_GIHistory", 0.9f);
     s.vsync = CVar("lr_VSync", 1); s.maxFps = CVar("lr_MaxFPS", 0); s.debugView = CVar("lr_DebugView", 0);
     s.exposure = CVar("lr_Exposure", 1); s.widescreen = CVar("lr_Widescreen", 1);
 }

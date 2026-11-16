@@ -119,7 +119,9 @@ static void TryGameSpeedFix(bool log) {
 // ------------------------------------------------------------------ console options
 static const char *kOptions[][2] = {
     {"lr_RT", "1"},            // ray-traced lighting (0 = raster baseline)
-    {"lr_RTShadows", "1"}, {"lr_RTReflections", "1"}, {"lr_RTAO", "1"}, {"lr_RTGI", "0"},
+    {"lr_RTShadows", "1"}, {"lr_RTReflections", "1"}, {"lr_RTAO", "1"},
+    {"lr_RTGI", "1"},          // 1: lamps + one indirect bounce replace the lightmaps; 0: lightmaps with ray-traced shadows
+    {"lr_GIDirect", "0.7"}, {"lr_GIIndirect", "1"}, {"lr_GIHistory", "0.9"},
     {"lr_VSync", "1"}, {"lr_MaxFPS", "0"}, {"lr_DebugView", "0"}, {"lr_Exposure", "1"}, {"lr_Widescreen", "1"},
     {"lr_GameSpeedFix", "1"}, {"lr_MouseFix", "1"},
 };
@@ -335,9 +337,12 @@ static void PostKey(const char *name) {
 }
 static void RunScript() {
     DWORD now = timeGetTime();
+    // LITHRAY_CMD names another command file (a second, development instance next to a played one)
+    static char cmdFile[MAX_PATH] = "";
+    if (!cmdFile[0] && !GetEnvironmentVariableA("LITHRAY_CMD", cmdFile, sizeof(cmdFile))) strcpy(cmdFile, "lithray_cmd.txt");
     if (g_script.empty() && now - g_scriptPoll > 250) {
         g_scriptPoll = now;
-        if (FILE *f = fopen("lithray_cmd.txt", "r")) {
+        if (FILE *f = fopen(cmdFile, "r")) {
             char line[512];
             while (fgets(line, sizeof(line), f)) {
                 size_t n = strlen(line);
@@ -345,7 +350,7 @@ static void RunScript() {
                 if (n) g_script.push_back(line);
             }
             fclose(f);
-            DeleteFileA("lithray_cmd.txt");
+            DeleteFileA(cmdFile);
         }
     }
     while (!g_script.empty() && (int)(now - g_scriptWaitUntil) >= 0) {
@@ -434,6 +439,7 @@ static int Init(LT1RenderStructInit *init) {
         PostMessageA(g_window, WM_ACTIVATEAPP, TRUE, 0);   // the engine only runs its client once told it is active
     } else
         BringToForeground();
+    UpdateCursorCapture();      // hidden and centred with focus, visible and free without
 
     lr::SharedHeader *h = bridge::Header();
     strncpy(init->m_Mode.m_InternalName, "primary", sizeof(init->m_Mode.m_InternalName) - 1);
