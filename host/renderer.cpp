@@ -419,15 +419,15 @@ void Renderer::onTerm() {
 static void SpecFromName(const char *name, float &spec, float &shininess) {
     static const struct { const char *key; float spec, shin; } table[] = {
         {"chrome", 0.9f, 80}, {"metal", 0.6f, 40}, {"steel", 0.65f, 48}, {"iron", 0.45f, 28}, {"pipe", 0.5f, 32}, {"rail", 0.5f, 32},
-        {"glass", 0.8f, 96}, {"window", 0.7f, 80}, {"tile", 0.55f, 56}, {"marble", 0.6f, 64}, {"floor", 0.3f, 28}, {"lino", 0.4f, 40},
-        {"water", 0.8f, 96}, {"ice", 0.7f, 64}, {"wet", 0.6f, 48}, {"plastic", 0.4f, 32}, {"leather", 0.3f, 20}, {"wood", 0.2f, 16},
-        {"weapon", 0.6f, 40}, {"gun", 0.6f, 40}, {"_pv", 0.6f, 40}, {"skin", 0.15f, 12}, {"brick", 0.08f, 10}, {"concrete", 0.1f, 10},
-        {"stone", 0.12f, 12}, {"dirt", 0.04f, 8}, {"grass", 0.04f, 8}, {"cloth", 0.05f, 8}, {"carpet", 0.03f, 6}};
+        {"glass", 0.8f, 96}, {"window", 0.7f, 80}, {"tile", 0.4f, 56}, {"marble", 0.5f, 64}, {"floor", 0.12f, 28}, {"lino", 0.3f, 40},
+        {"water", 0.8f, 96}, {"ice", 0.7f, 64}, {"wet", 0.6f, 48}, {"plastic", 0.3f, 32}, {"leather", 0.15f, 20}, {"wood", 0.06f, 16},
+        {"weapon", 0.5f, 40}, {"gun", 0.5f, 40}, {"_pv", 0.5f, 40}};
     char lower[96];
     size_t i = 0;
     for (; name[i] && i < sizeof(lower) - 1; i++) lower[i] = (char)tolower((unsigned char)name[i]);
     lower[i] = 0;
-    spec = 0.18f; shininess = 16;
+    // no keyword, no highlight: most of the game's surfaces (and every character skin) are matte
+    spec = 0.0f; shininess = 16;
     for (auto &t : table) if (strstr(lower, t.key)) { spec = t.spec; shininess = t.shin; return; }
 }
 

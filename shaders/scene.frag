@@ -398,7 +398,9 @@ void main() {
     vec3 geoN = n;
     // shading normal with the generated relief (lit world and model surfaces only)
     vec3 nb = geoN;
-    if (frame.mat.x > 0.0 && (I.flags & (I_UNLIT | I_SKY | I_PRELIT)) == 0u) nb = bumpNormal(geoN, tex, vUv, frame.mat.x);
+    // (weaker on models: a face or a coat read as embossed print otherwise)
+    if (frame.mat.x > 0.0 && (I.flags & (I_UNLIT | I_SKY | I_PRELIT)) == 0u)
+        nb = bumpNormal(geoN, tex, vUv, frame.mat.x * ((I.flags & I_MODEL) != 0u ? 0.3 : 1.0));
 
     float alpha = I.color.a;
     // d3d.ren's translucent states: alpha = texture alpha x object alpha. On a 1555 (fullbright) texture the alpha bit is
@@ -480,7 +482,7 @@ void main() {
             vec3 o = vWorld + geoN * (surfModel ? 1.5 : 0.75);
             vec3 spec;
             vec3 direct = lampDirect(vWorld, nb, o, surfModel ? 3u : 1u, 8, v, max(texInfo[tex].shininess, 4.0), spec);
-            specOut = spec * texInfo[tex].spec * frame.mat.y * frame.lightScale.rgb;
+            specOut = spec * texInfo[tex].spec * frame.mat.y * frame.lightScale.rgb * 0.5;
             vec3 bounce = bounceRadiance(o, cosineDir(geoN, vec2(rnd(), rnd()))) * frame.gi.y;
             bool lookNow = frame.mat.z > 0.5;
             vec3 scale = lookNow ? frame.lightScale.rgb * 1.3 : frame.lightScale.rgb * frame.lightScale.a;
