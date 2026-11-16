@@ -11,7 +11,7 @@ layout(push_constant) uniform PC {
     vec4 overlayRect;   // mode area inside the output, in uv: x, y, w, h
     vec4 lightAdd;      // rgb add, a = has scene
     vec4 params;        // x = ao enabled, y = history valid, z = near, w = far
-    vec4 params2;       // x = exposure, y = debug view
+    vec4 params2;       // x = exposure, y = debug view, z = the 2D layer has content
 } pc;
 
 layout(location = 0) in vec2 vUv;
@@ -60,7 +60,8 @@ void main() {
 
     vec2 ouv = (vUv - pc.overlayRect.xy) / pc.overlayRect.zw;
     if (all(greaterThanEqual(ouv, vec2(0.0))) && all(lessThanEqual(ouv, vec2(1.0)))) {
-        vec4 o = texture(overlay, ouv);
+        // an empty layer is not uploaded: the image still holds the last non-empty one (a menu) and must not be shown
+        vec4 o = pc.params2.z > 0.5 ? texture(overlay, ouv) : vec4(0.0);
         color = mix(color, o.rgb, o.a);
     } else if (pc.lightAdd.a < 0.5)
         color = vec3(0.0);

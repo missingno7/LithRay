@@ -20,6 +20,7 @@ layout(location = 7) flat in uint vInstance;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outAux;       // rg = screen-space motion (uv units), b = ambient occlusion, a = packed normal
+layout(location = 3) out vec4 outIndirect;  // rgb = noisy bounce light of composed pixels (filtered and accumulated by the resolve)
 layout(location = 2) out vec4 outLight;     // rgb = light to multiply onto outColor (albedo) in the resolve, a = 1; a = 0: outColor is final
 
 vec4 sampleTex(uint tex, vec2 texelUv) {
@@ -198,9 +199,7 @@ vec3 lampDirect(vec3 p, vec3 n, vec3 origin, uint wantFlags, int maxRays) {
         if (luma(c) * ndl < 0.01) continue;
         float vis = 1.0;
         if (rays < maxRays) {
-            vec3 target = to + rndSphere() * frame.gi.w;
-            float td = length(target);
-            vis = traceMasked(origin, target / td, max(td - 2.0, 0.0), 0xffu);
+            vis = traceMasked(origin, to / d, max(d - 2.0, 0.0), 0xffu);
             rays++;
         }
         sum += c * ndl * vis;
@@ -418,6 +417,7 @@ void main() {
 
     // ---- full ray-traced lighting: lamps and one bounce replace the baked light of opaque world and model surfaces
     bool composed = false;
+    vec3 bounceOut = vec3(0.0);
 #ifdef RT
     {
         bool surfWorld = world && (I.flags & (I_PRELIT | I_SKY | I_BLEND)) == 0u && (sflags & SURF_BRIGHT) == 0u;
@@ -431,7 +431,9 @@ void main() {
             vec3 bounce = bounceRadiance(o, cosineDir(geoN, vec2(rnd(), rnd()))) * frame.gi.y;
             vec3 scale = frame.lightScale.rgb * frame.lightScale.a;
             // keep only the dynamic-light part of the classic term: the baked part is what the rays replace
-            light = (surfModel ? I.color.rgb : frame.ambient.rgb * scale) + direct * scale + bounce + dynLight;
+            // direct light stays sharp (never filtered); the bounce goes to its own buffer for the resolve to denoise
+            light = (surfModel ? I.color.rgb : frame.ambient.rgb * 0.5 * scale) + direct * scale + dynLight;
+            bounceOut = bounce;
         }
     }
 #endif
@@ -508,8 +510,10 @@ void main() {
         vec3 albedo = dbg == 2 ? vec3(1.0) : max(tx.rgb, vec3(0.04));
         outColor = vec4(albedo, dbg == 2 ? 0.0 : fbMask);
         outLight = vec4((dbg == 2 ? light : color) / (dbg == 2 ? vec3(1.0) : albedo), 1.0);
+        outIndirect = vec4(bounceOut, 1.0);
     } else {
         outColor = vec4(color, alpha);
         outLight = vec4(0.0);
+        outIndirect = vec4(0.0);
     }
 }

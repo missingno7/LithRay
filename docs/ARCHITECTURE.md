@@ -135,6 +135,12 @@ Where the light comes from (`host/lamps.cpp`):
   the file lamps. The emitter list is built once the surface textures are known.
 * **Dynamic lights** (`OT_LIGHT` objects, signed colours) with one shadow ray each.
 
+The file lamps are calibrated per level against the level's own lightmaps (`calibrateLamps`: median ratio of baked
+light to the unshadowed lamp sum over the lightmapped polygons). Emitters are not created where a file lamp already
+sits in front of the glowing polygon. The light is written as two buffers: `light` (ambient, lamps with hard shadow
+rays, dynamic lights, reflections; exact, never filtered) and `indirect` (the one-sample bounce; the only part the
+resolve filters and accumulates).
+
 Calibration notes (measured against the lightmap mode at the same camera): the original bake has no cosine term
 (`colour * BrightScale * (1 - d/r) * cone`, one-sided) and clamps at white. Pure Lambert made every wall and ceiling
 visibly darker than the designers' result, so the direct term uses `0.5 + 0.5 n.l`, and the resolve applies a soft

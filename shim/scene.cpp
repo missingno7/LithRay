@@ -541,7 +541,7 @@ static void FillSettings(lr::Settings &s) {
     s.drawLineSystems = CVar("DrawLineSystems", 1); s.drawWorldModels = CVar("DrawWorldModels", 1);
     s.rt = CVar("lr_RT", 1); s.rtShadows = CVar("lr_RTShadows", 1); s.rtReflections = CVar("lr_RTReflections", 1);
     s.rtAO = CVar("lr_RTAO", 1); s.rtGI = CVar("lr_RTGI", 1);
-    s.giDirect = CVar("lr_GIDirect", 1); s.giIndirect = CVar("lr_GIIndirect", 1.3f); s.giHistory = CVar("lr_GIHistory", 0.9f);
+    s.giDirect = CVar("lr_GIDirect", 0.9f); s.giIndirect = CVar("lr_GIIndirect", 1); s.giHistory = CVar("lr_GIHistory", 0.9f);
     s.giEmissive = CVar("lr_GIEmissive", 1);
     s.vsync = CVar("lr_VSync", 1); s.maxFps = CVar("lr_MaxFPS", 0); s.debugView = CVar("lr_DebugView", 0);
     s.exposure = CVar("lr_Exposure", 1); s.widescreen = CVar("lr_Widescreen", 1);

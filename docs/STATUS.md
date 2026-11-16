@@ -43,6 +43,12 @@ Last updated 2026-11-16 (first session, with the user playing the game during th
   passes texture alpha is opacity (also for the fullbright alpha bit). Both from `port_notes/sky.md` and E.1.13.
 * Masked walls one-sided and unlit: translucent world models are two-sided, pre-lit by vertex colours, no lightmap.
 * View pistol with see-through parts: d3d.ren never alpha-tests; a solid model ignores its skin's alpha mask.
+* Menu image stuck over a cutscene: an empty 2D layer is not uploaded, and the host kept compositing the last image.
+* Full ray-traced mode washed out, shadows blurred: (1) emitters double-counted light wherever the level already has a
+  lamp under a glowing panel (now skipped there); (2) direct and bounce light shared one filtered buffer (now direct
+  light is exact and unfiltered, only the bounce is denoised). The lamp values themselves are right: fitted against
+  the level's lightmaps the unshadowed lamp sum has a median ratio of 0.93 in `01_SubwayA`, which also confirms the
+  bake formula (no cosine term). `host/lamps.cpp` `calibrateLamps` logs this per level.
 * Full ray-traced mode dimmer than the original: the bake has no cosine term; and "bright" things are not tagged
   polygons in this level (no surface has flag 0x20) but fullbright texels and ordinary lightmapped world models.
 

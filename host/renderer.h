@@ -106,6 +106,7 @@ private:
     void writeTextureSlot(uint32_t slot, VkImageView view);
     void saveScreenshot();
     void loadLamps(const char *worldFile, const char *rezSources);
+    void calibrateLamps();          // fit the file lamps' strength to the level's own lightmaps
     void buildLampGrid();           // (re)builds the grid over `lamps` and uploads lamps + grid
     void buildEmitters();           // bright surfaces and fullbright texels become light sources (needs the surface textures)
     void logOnce(uint32_t key, const char *fmt, ...);
@@ -125,6 +126,7 @@ private:
     bool frameInFlight = false;
 
     Image sceneColor, sceneAux, sceneDepth, history[2], overlayImg, white;
+    Image sceneIndirect;                            // the noisy bounce light (the only part that is filtered)
     Image sceneLight, lightHist[2], litColor;       // full ray-traced lighting: raw estimate, accumulated history, resolved scene
     bool lightHistValid = false;
     Image textures[kMaxTextures];
@@ -145,7 +147,8 @@ private:
     std::string worldName;
     std::vector<GLamp> lamps; std::vector<uint32_t> lampCells, lampIndices; GLampGrid lampGrid = {};
     // emitters: polygons of the main world that can emit (decided once their textures are known)
-    struct EmitPoly { V3 center, normal; float area; uint32_t surface; bool bright; };
+    struct EmitPoly { V3 center, normal; float area; uint32_t surface; bool bright; float lm[3]; bool hasLm; };
+    float lampCalibration = 1.0f;
     std::vector<EmitPoly> emitPolys;
     size_t fileLampCount = 0; bool emittersBuilt = false; float emittersStrength = -1;
     struct TexStats { float avg[3], fbAvg[3], fbCoverage; };

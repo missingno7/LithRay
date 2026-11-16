@@ -219,6 +219,7 @@ void Renderer::buildEmitters() {
     float strength = settings.giEmissive > 0 ? settings.giEmissive : 0.0f;
     struct Cand { float weight; GLamp lamp; };
     std::vector<Cand> cands;
+    size_t skipped = 0;
     for (const EmitPoly &e : emitPolys) {
         uint32_t tex = e.surface < surfaces.size() ? surfaces[e.surface].tex : 0;
         if (!tex || tex >= texStats.size()) continue;
@@ -229,6 +230,14 @@ void Renderer::buildEmitters() {
         else continue;
         float lum = col[0] * 0.299f + col[1] * 0.587f + col[2] * 0.114f;
         if (lum < 0.06f || e.area < 48.0f) continue;
+        // A glowing panel the level designer already gave a lamp (ceiling lights) must not shine twice.
+        bool hasLamp = false;
+        float reach = sqrtf(e.area) + 96.0f;
+        for (size_t i = 0; i < fileLampCount && !hasLamp; i++) {
+            V3 d = V3{lamps[i].posRadius[0], lamps[i].posRadius[1], lamps[i].posRadius[2]} - e.center;
+            hasLamp = dot(d, d) < reach * reach && dot(d, e.normal) > -8.0f;
+        }
+        if (hasLamp) { skipped++; continue; }
         GLamp l = {};
         V3 p = e.center + e.normal * 4.0f;
         float size = sqrtf(e.area);
@@ -245,6 +254,50 @@ void Renderer::buildEmitters() {
     size_t room = kMaxLamps > lamps.size() ? kMaxLamps - lamps.size() : 0;
     for (size_t i = 0; i < cands.size() && i < room && i < 900; i++) lamps.push_back(cands[i].lamp);
     emittersBuilt = true; emittersStrength = settings.giEmissive;
-    Log("emitters: %zu candidates from %zu polygons, %zu used", cands.size(), emitPolys.size(), lamps.size() - fileLampCount);
+    Log("emitters: %zu candidates from %zu polygons, %zu used, %zu skipped (a level lamp is already there)", cands.size(), emitPolys.size(),
+        lamps.size() - fileLampCount, skipped);
     buildLampGrid();
+}
+
+// The world file gives each lamp a colour, BrightScale and radius, but how the original light preprocessor turned
+// those into lightmap values is not known exactly (an open item in the reconstruction). The level's own lightmaps are
+// the ground truth: over all lightmapped polygons of the main world, compare the bake's result with the unshadowed sum
+// of the lamps reaching the polygon (the bake's formula: one-sided, linear falloff, cone) and scale every file lamp by
+// the ratio found where the bake is least occluded (an upper percentile).
+void Renderer::calibrateLamps() {
+    lampCalibration = 1.0f;
+    if (lamps.empty() || emitPolys.empty()) return;
+    std::vector<float> ratios;
+    for (size_t pi = 0; pi < emitPolys.size(); pi += 1 + emitPolys.size() / 6000) {
+        const EmitPoly &e = emitPolys[pi];
+        if (!e.hasLm || e.area < 256.0f) continue;
+        float sum = 0;
+        for (size_t i = 0; i < fileLampCount && i < lamps.size(); i++) {
+            const GLamp &l = lamps[i];
+            if (!((uint32_t)l.color[3] & 1u)) continue;
+            V3 to = V3{l.posRadius[0], l.posRadius[1], l.posRadius[2]} - e.center;
+            float d = length(to);
+            if (d >= l.posRadius[3] || dot(to, e.normal) <= 0) continue;
+            float f = 1.0f - d / l.posRadius[3];
+            if (l.spot[3] > -1.5f) {
+                float c = d > 0.001f ? -(l.spot[0] * to.x + l.spot[1] * to.y + l.spot[2] * to.z) / d : 1.0f;
+                f *= std::max((c - l.spot[3]) / (1.0f - l.spot[3]), 0.0f);
+            }
+            sum += (l.color[0] * 0.299f + l.color[1] * 0.587f + l.color[2] * 0.114f) * f;
+        }
+        float baked = std::max(e.lm[0] - levelAmbient[0], 0.0f) * 0.299f + std::max(e.lm[1] - levelAmbient[1], 0.0f) * 0.587f +
+                      std::max(e.lm[2] - levelAmbient[2], 0.0f) * 0.114f;
+        // saturated lightmaps say nothing about the ratio (the bake clamped there)
+        if (sum > 0.08f && e.lm[1] < 0.95f) ratios.push_back(baked / sum);
+    }
+    if (ratios.size() < 30) { Log("lamp calibration: only %zu samples, lamps left as they are", ratios.size()); return; }
+    std::sort(ratios.begin(), ratios.end());
+    float med = ratios[ratios.size() / 2], hi = ratios[ratios.size() * 8 / 10];
+    // The median: occluded samples pull the ratio down, samples the bake lit by bounce-less overlap pull it up. A value
+    // near 1 (0.93 in 01_SubwayA) also confirms the bake formula itself, cosine-free.
+    lampCalibration = std::clamp(med, 0.05f, 2.0f);
+    for (size_t i = 0; i < fileLampCount && i < lamps.size(); i++)
+        for (int k = 0; k < 3; k++) lamps[i].color[k] *= lampCalibration;
+    Log("lamp calibration against the lightmaps: %zu samples, ratio median %.3f (80th percentile %.3f) -> lamps x %.3f", ratios.size(), med, hi,
+        lampCalibration);
 }

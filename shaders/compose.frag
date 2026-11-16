@@ -7,7 +7,8 @@ layout(set = 0, binding = 0) uniform sampler2D sceneColor;   // albedo, or the f
 layout(set = 0, binding = 1) uniform sampler2D sceneAux;     // rg motion, b ao, a packed normal
 layout(set = 0, binding = 2) uniform sampler2D sceneDepth;
 layout(set = 0, binding = 3) uniform sampler2D sceneLight;   // rgb light estimate, a = 1 when it must be composed
-layout(set = 0, binding = 4) uniform sampler2D lightHistory; // rgb accumulated light, a = linear depth / far (< 0: none)
+layout(set = 0, binding = 4) uniform sampler2D lightHistory; // rgb accumulated INDIRECT light, a = linear depth / far (< 0: none)
+layout(set = 0, binding = 5) uniform sampler2D sceneIndirect; // rgb noisy bounce light of this frame
 
 layout(push_constant) uniform PC {
     vec4 fogColor;      // rgb, a = enabled
@@ -46,12 +47,12 @@ void main() {
     vec3 n = unpackNormal(aux.a);
 
     // ---- spatial: 5x5 taps, 2 pixels apart, only across the same surface
-    vec2 px = 1.0 / vec2(textureSize(sceneLight, 0));
+    vec2 px = 1.0 / vec2(textureSize(sceneIndirect, 0));
     vec3 sum = vec3(0.0); float wsum = 0.0;
     for (int y = -2; y <= 2; y++)
         for (int x = -2; x <= 2; x++) {
             vec2 uv = vUv + vec2(x, y) * px * 2.0;
-            vec4 l = texture(sceneLight, uv);
+            vec4 l = texture(sceneIndirect, uv);
             if (l.a < 0.5) continue;
             float d = linearDepth(texture(sceneDepth, uv).r);
             vec3 nn = unpackNormal(texture(sceneAux, uv).a);
@@ -59,7 +60,7 @@ void main() {
             w *= (x == 0 && y == 0) ? 1.0 : 0.7;
             sum += min(l.rgb, vec3(4.0)) * w; wsum += w;
         }
-    vec3 light = wsum > 1e-4 ? sum / wsum : min(raw.rgb, vec3(4.0));
+    vec3 light = wsum > 1e-4 ? sum / wsum : min(texture(sceneIndirect, vUv).rgb, vec3(4.0));
 
     // ---- temporal: the accumulated light of the same surface point one frame ago
     vec2 prevUv = vUv - aux.rg;
@@ -69,6 +70,8 @@ void main() {
         if (h.a >= 0.0 && abs(hl - lin) < max(lin * 0.06, 1.5)) light = mix(light, h.rgb, pc.params.y);
     }
     outHistory = vec4(light, lin / pc.fogParams.w);
+    // direct light (lamps, shadows, dynamic lights, reflections) is exact per pixel and is never filtered
+    light += raw.rgb;
 
     // The original bake clamps at white; summed physical lamps do not. A soft shoulder above mid-grey keeps bright
     // areas from flattening out while leaving shadows and dim areas linear.

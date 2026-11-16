@@ -61,10 +61,10 @@ void Renderer::createStatic() {
         VKC(vkCreateDescriptorSetLayout(dev, &li, nullptr, &sceneLayout));
     }
     {
-        VkDescriptorSetLayoutBinding b[5];
-        for (uint32_t i = 0; i < 5; i++) b[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        VkDescriptorSetLayoutBinding b[6];
+        for (uint32_t i = 0; i < 6; i++) b[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
         VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        li.bindingCount = 5; li.pBindings = b;
+        li.bindingCount = 6; li.pBindings = b;
         VKC(vkCreateDescriptorSetLayout(dev, &li, nullptr, &postLayout));
     }
     VkDescriptorPoolSize ps[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures + 64}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
@@ -199,11 +199,12 @@ VkPipeline Renderer::makeScenePipeline(Pipe p, bool rt) {
     VkPipelineDepthStencilStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     ds.depthTestEnable = p != P_NOZ; ds.depthWriteEnable = p == P_OPAQUE || p == P_SKYMASK || p == P_BLEND_ZWRITE;
     ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    VkPipelineColorBlendAttachmentState ba[3] = {};
+    VkPipelineColorBlendAttachmentState ba[4] = {};
     bool blend = p == P_BLEND || p == P_NOZ || p == P_BLEND_ZWRITE || p == P_ADD;
     ba[0].colorWriteMask = p == P_SKYMASK ? 0 : 0xf;
     ba[1].colorWriteMask = (p == P_OPAQUE) ? 0xf : 0;
     ba[2].colorWriteMask = (p == P_OPAQUE) ? 0xf : 0;
+    ba[3].colorWriteMask = (p == P_OPAQUE) ? 0xf : 0;
     if (blend) {
         ba[0].blendEnable = VK_TRUE;
         ba[0].srcColorBlendFactor = p == P_ADD ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_SRC_ALPHA;
@@ -212,13 +213,13 @@ VkPipeline Renderer::makeScenePipeline(Pipe p, bool rt) {
         ba[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; ba[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE; ba[0].alphaBlendOp = VK_BLEND_OP_ADD;
     }
     VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    cb.attachmentCount = 3; cb.pAttachments = ba;
+    cb.attachmentCount = 4; cb.pAttachments = ba;
     VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dy.dynamicStateCount = 2; dy.pDynamicStates = dyn;
-    VkFormat fmts[3] = {kColorFmt, kAuxFmt, kLightFmt};
+    VkFormat fmts[4] = {kColorFmt, kAuxFmt, kLightFmt, kLightFmt};
     VkPipelineRenderingCreateInfo ri = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    ri.colorAttachmentCount = 3; ri.pColorAttachmentFormats = fmts; ri.depthAttachmentFormat = kDepthFmt;
+    ri.colorAttachmentCount = 4; ri.pColorAttachmentFormats = fmts; ri.depthAttachmentFormat = kDepthFmt;
     VkGraphicsPipelineCreateInfo gp = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     gp.pNext = &ri; gp.stageCount = 2; gp.pStages = st; gp.pVertexInputState = &vi; gp.pInputAssemblyState = &ia;
     gp.pViewportState = &vp; gp.pRasterizationState = &rs; gp.pMultisampleState = &ms; gp.pDepthStencilState = &ds;
@@ -231,7 +232,7 @@ VkPipeline Renderer::makeScenePipeline(Pipe p, bool rt) {
 
 void Renderer::destroyTargets() {
     gfx.destroy(sceneColor); gfx.destroy(sceneAux); gfx.destroy(sceneDepth); gfx.destroy(history[0]); gfx.destroy(history[1]);
-    gfx.destroy(sceneLight); gfx.destroy(lightHist[0]); gfx.destroy(lightHist[1]); gfx.destroy(litColor);
+    gfx.destroy(sceneIndirect); gfx.destroy(sceneLight); gfx.destroy(lightHist[0]); gfx.destroy(lightHist[1]); gfx.destroy(litColor);
 }
 
 void Renderer::createTargets() {
@@ -244,12 +245,13 @@ void Renderer::createTargets() {
     history[1] = gfx.createImage(w, h, kAuxFmt, use);
     sceneDepth = gfx.createImage(w, h, kDepthFmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 1, VK_IMAGE_ASPECT_DEPTH_BIT);
     sceneLight = gfx.createImage(w, h, kLightFmt, use);
+    sceneIndirect = gfx.createImage(w, h, kLightFmt, use);
     lightHist[0] = gfx.createImage(w, h, kLightFmt, use);
     lightHist[1] = gfx.createImage(w, h, kLightFmt, use);
     litColor = gfx.createImage(w, h, kColorFmt, use);
     lightHistValid = false;
     VkCommandBuffer c = gfx.beginOnce();
-    for (Image *i : {&sceneColor, &sceneAux, &history[0], &history[1], &sceneLight, &lightHist[0], &lightHist[1], &litColor})
+    for (Image *i : {&sceneColor, &sceneAux, &history[0], &history[1], &sceneLight, &sceneIndirect, &lightHist[0], &lightHist[1], &litColor})
         transition(c, i->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     transition(c, sceneDepth.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
     gfx.endOnce(c);
@@ -279,6 +281,12 @@ void Renderer::createTargets() {
                                        {clampSampler, lightHist[1 - s].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
         for (uint32_t i = 0; i < 5; i++) { w5[i].dstSet = composeSet[s]; w5[i].pImageInfo = &ci[i]; }
         vkUpdateDescriptorSets(gfx.dev, 5, w5, 0, nullptr);
+        VkDescriptorImageInfo ind = {nearestSampler, sceneIndirect.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet wi = w5[0];
+        wi.dstBinding = 5; wi.pImageInfo = &ind;
+        vkUpdateDescriptorSets(gfx.dev, 1, &wi, 0, nullptr);
+        wi.dstSet = postSet[s];             // unused by the post shader, kept valid
+        vkUpdateDescriptorSets(gfx.dev, 1, &wi, 0, nullptr);
     }
 }
 
@@ -567,6 +575,14 @@ void Renderer::onWorldBegin(const lr::WorldBeginCmd &c, const uint8_t *p) {
         }
         e.normal = V3{ws[poly.surface].normal.x, ws[poly.surface].normal.y, ws[poly.surface].normal.z};
         e.surface = poly.surface; e.bright = polyBright[i] != 0;
+        e.hasLm = poly.lmOffset != 0xffffffffu;
+        if (e.hasLm) {
+            const uint16_t *src = (const uint16_t *)(lm + poly.lmOffset);
+            uint32_t n = (uint32_t)poly.lmWidth * poly.lmHeight;
+            double acc[3] = {};
+            for (uint32_t t = 0; t < n; t++) { acc[0] += (src[t] >> 11) / 31.0; acc[1] += ((src[t] >> 5) & 63) / 63.0; acc[2] += (src[t] & 31) / 31.0; }
+            for (int k = 0; k < 3; k++) e.lm[k] = (float)(acc[k] / n);
+        }
         emitPolys.push_back(e);
     }
     Log("bright polygons: %u by surface flag, %u by saturated lightmap, %u by bright vertex colours without a lightmap", nFlagBright, nBakedBright, nVertexBright);
@@ -616,6 +632,7 @@ void Renderer::onWorldBegin(const lr::WorldBeginCmd &c, const uint8_t *p) {
     haveWorld = true;
     historyMap.clear(); historyValid = false; prevValid = false; loggedKeys.clear();
     loadLamps(c.worldFile, c.rezSources);
+    calibrateLamps();
     buildLampGrid();
     emittersBuilt = false;
     Log("world '%s': %u bsps, %u polys, %u vertices, %u triangles, lightmap atlas %ux%u (%zu lightmaps)", c.worldName, c.nBsps, c.nPolys,
@@ -1196,10 +1213,10 @@ void Renderer::renderFrame(bool hadScene) {
     if (drawScene) {
         std::stable_sort(draws.begin(), draws.end(), [](const Draw &a, const Draw &b) { return a.group < b.group; });
         auto beginScenePass = [&](VkImageView color0, bool clear) {
-            VkRenderingAttachmentInfo ca[3] = {{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO},
-                                               {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}};
-            VkImageView views[3] = {color0, sceneAux.view, sceneLight.view};
-            for (int i = 0; i < 3; i++) {
+            VkRenderingAttachmentInfo ca[4] = {{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO},
+                                               {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}};
+            VkImageView views[4] = {color0, sceneAux.view, sceneLight.view, sceneIndirect.view};
+            for (int i = 0; i < 4; i++) {
                 ca[i].imageView = views[i]; ca[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
                 ca[i].loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             }
@@ -1209,7 +1226,7 @@ void Renderer::renderFrame(bool hadScene) {
             da.loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             da.clearValue.depthStencil = {1.0f, 0};
             VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO};
-            ri.renderArea = fullRect; ri.layerCount = 1; ri.colorAttachmentCount = 3; ri.pColorAttachments = ca; ri.pDepthAttachment = &da;
+            ri.renderArea = fullRect; ri.layerCount = 1; ri.colorAttachmentCount = 4; ri.pColorAttachments = ca; ri.pDepthAttachment = &da;
             vkCmdBeginRendering(cmd, &ri);
             VkRect2D sc = {{(int32_t)sceneViewport.x, (int32_t)sceneViewport.y}, {(uint32_t)sceneViewport.width, (uint32_t)sceneViewport.height}};
             vkCmdSetScissor(cmd, 0, 1, &sc);
@@ -1222,12 +1239,12 @@ void Renderer::renderFrame(bool hadScene) {
         auto toSampled = [&](Image &i) { transition(cmd, i.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL); };
 
         // ---- 1. opaque pass: sky, world, solid objects, view model -> colour (albedo or final), aux, light, depth
-        toAttachment(sceneColor); toAttachment(sceneAux); toAttachment(sceneLight);
+        toAttachment(sceneColor); toAttachment(sceneAux); toAttachment(sceneLight); toAttachment(sceneIndirect);
         transition(cmd, sceneDepth.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
         beginScenePass(sceneColor.view, true);
         drawGroups(true, rtOn);
         vkCmdEndRendering(cmd);
-        toSampled(sceneColor); toSampled(sceneAux); toSampled(sceneLight);
+        toSampled(sceneColor); toSampled(sceneAux); toSampled(sceneLight); toSampled(sceneIndirect);
         transition(cmd, sceneDepth.img, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
 
         // ---- 2. lighting resolve: filter + accumulate the ray-traced light, compose with the albedo, fog
@@ -1257,12 +1274,12 @@ void Renderer::renderFrame(bool hadScene) {
         lightHistValid = true;
 
         // ---- 3. translucent pass over the resolved scene (depth tested, never written to aux / light)
-        toAttachment(sceneAux); toAttachment(sceneLight);
+        toAttachment(sceneAux); toAttachment(sceneLight); toAttachment(sceneIndirect);
         transition(cmd, sceneDepth.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
         beginScenePass(litColor.view, false);
         drawGroups(false, rtOn);
         vkCmdEndRendering(cmd);
-        toSampled(litColor); toSampled(sceneAux); toSampled(sceneLight);
+        toSampled(litColor); toSampled(sceneAux); toSampled(sceneLight); toSampled(sceneIndirect);
         transition(cmd, sceneDepth.img, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
     } else
         lightHistValid = false;
@@ -1289,7 +1306,7 @@ void Renderer::renderFrame(bool hadScene) {
                         modeW * s / gfx.extent.width, modeH * s / gfx.extent.height,
                         lightAdd[0], lightAdd[1], lightAdd[2], drawScene ? 1.0f : 0.0f,
                         (rtOn && settings.rtAO != 0) ? 1.0f : 0.0f, historyValid ? 1.0f : 0.0f, nearZ, farZ,
-                        settings.exposure > 0 ? settings.exposure : 1.0f, settings.debugView, 0, 0};
+                        settings.exposure > 0 ? settings.exposure : 1.0f, settings.debugView, overlayEmpty ? 0.0f : 1.0f, 0};
         vkCmdPushConstants(cmd, postPL, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 64, pc);
         vkCmdDraw(cmd, 3, 1, 0, 0);
         vkCmdEndRendering(cmd);
