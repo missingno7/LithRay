@@ -37,7 +37,8 @@ struct Instance {
 };
 struct Surface { uint tex; uint flags; uint pad0, pad1; };
 struct Light { vec4 posRadius; vec4 color; };     // colour: signed, classic 2c-1 per channel
-struct TexInfo { uint flags; float gloss; };
+struct TexInfo { uint flags; float gloss; float spec; float shininess; };
+#define TEX_NORMAL_BASE 2048u       // textures[id + TEX_NORMAL_BASE]: the normal map generated from texture id
 struct Lamp { vec4 posRadius; vec4 color; vec4 spot; };   // color.w: 1 lit the world, 2 lit models, 4 clipped; spot: dir, cos(half fov) or -2
 
 layout(set = 0, binding = 0) uniform sampler2D textures[MAX_TEXTURES];
@@ -53,6 +54,7 @@ layout(set = 0, binding = 1, scalar, row_major) uniform Frame {
     vec4 misc;                      // frame index, debug view, time, exposure
     vec4 skyColor;                  // what rays see when they leave the world
     vec4 viewport;                  // scene viewport in pixels: x, y, w, h
+    vec4 mat;                       // invented materials: x = bump strength, y = specular scale
     vec4 gi;                        // full ray-traced lighting: enabled, indirect scale, direct scale, lamp radius
     vec4 skyEye;                    // the sky camera's position (sky objects are culled and fogged from it)
     vec4 ambient;                   // rgb: level lightmap ambient, a: static lamp shadows on

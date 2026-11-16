@@ -34,6 +34,22 @@ vec4 sampleTexLod(uint tex, vec2 texelUv, float lod) {
     return textureLod(textures[nonuniformEXT(tex)], texelUv / size, lod);
 }
 
+// Generated normal map (host: from the texture's own luminance) applied in a cotangent frame built from screen-space
+// derivatives, so no vertex tangents are needed. Not game data: an invented relief for the ray-traced lighting.
+vec3 bumpNormal(vec3 n, uint tex, vec2 texelUv, float strength) {
+    if (tex == 0u || tex >= TEX_NORMAL_BASE - 1u || strength <= 0.0) return n;
+    vec2 uv = texelUv / vec2(textureSize(textures[nonuniformEXT(tex)], 0));
+    vec3 tn = texture(textures[nonuniformEXT(tex + TEX_NORMAL_BASE)], uv).xyz * 2.0 - 1.0;
+    vec3 dp1 = dFdx(vWorld), dp2 = dFdy(vWorld);
+    vec2 duv1 = dFdx(uv), duv2 = dFdy(uv);
+    vec3 dp2perp = cross(dp2, n), dp1perp = cross(n, dp1);
+    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x, B = dp2perp * duv1.y + dp1perp * duv2.y;
+    float m = max(dot(T, T), dot(B, B));
+    if (m < 1e-20) return n;
+    float inv = inversesqrt(m);
+    return normalize((T * tn.x + B * tn.y) * inv * strength + n * max(tn.z, 0.05));
+}
+
 // LithTech's model ramp: 16 steps from ambient to ambient + directional, half-Lambert (d3d.ren 0x10e7c).
 vec3 modelLight(Instance I, vec3 n) {
     float s = clamp(floor(dot(n, frame.modelLightDir.xyz) * 7.94 + 8.0), 0.0, 15.0) / 16.0;
@@ -181,7 +197,8 @@ vec3 cosineDir(vec3 n, vec2 u);
 
 // Direct light of the level's lamps at p: every lamp in reach, Lambert, one shadow ray each towards a random point
 // of a small sphere around the lamp (soft edges once accumulated).
-vec3 lampDirect(vec3 p, vec3 n, vec3 origin, uint wantFlags, int maxRays) {
+vec3 lampDirect(vec3 p, vec3 n, vec3 origin, uint wantFlags, int maxRays, vec3 view, float shininess, out vec3 spec) {
+    spec = vec3(0.0);
     uint b, e;
     if (!lampCell(p, b, e)) return vec3(0.0);
     vec3 sum = vec3(0.0);
@@ -203,7 +220,9 @@ vec3 lampDirect(vec3 p, vec3 n, vec3 origin, uint wantFlags, int maxRays) {
             rays++;
         }
         sum += c * ndl * vis;
+        if (vis > 0.0) spec += c * vis * pow(max(dot(n, normalize(to / d + view)), 0.0), shininess);
     }
+    spec *= frame.gi.z;
     return sum * frame.gi.z;
 }
 
@@ -349,6 +368,9 @@ void main() {
         if (back) n = -n;
     }
     vec3 geoN = n;
+    // shading normal with the generated relief (lit world and model surfaces only)
+    vec3 nb = geoN;
+    if (frame.mat.x > 0.0 && (I.flags & (I_UNLIT | I_SKY | I_PRELIT)) == 0u) nb = bumpNormal(geoN, tex, vUv, frame.mat.x);
 
     float alpha = I.color.a;
     // d3d.ren's translucent states: alpha = texture alpha x object alpha. On a 1555 (fullbright) texture the alpha bit is
@@ -404,7 +426,7 @@ void main() {
             float term = att;
 #ifdef RT
             if (rtOn > 0.5) {
-                float ndl = clamp(dot(geoN, d / max(len, 0.001)) * 0.75 + 0.25, 0.0, 1.0);
+                float ndl = clamp(dot(nb, d / max(len, 0.001)) * 0.75 + 0.25, 0.0, 1.0);
                 term = att * ndl * 1.6;
                 if (frame.rt.y > 0.5 && term > 0.004 && (I.flags & I_CLOSE) == 0u)
                     term *= traceMasked(origin, d / max(len, 0.001), max(len - 1.0, 0.0), (I.flags & I_PRELIT) != 0u ? 0x07u : 0xffu);
@@ -417,7 +439,7 @@ void main() {
 
     // ---- full ray-traced lighting: lamps and one bounce replace the baked light of opaque world and model surfaces
     bool composed = false;
-    vec3 bounceOut = vec3(0.0);
+    vec3 bounceOut = vec3(0.0), specOut = vec3(0.0);
 #ifdef RT
     {
         bool surfWorld = world && (I.flags & (I_PRELIT | I_SKY | I_BLEND)) == 0u && (sflags & SURF_BRIGHT) == 0u;
@@ -427,7 +449,9 @@ void main() {
             rngState = (uint(gl_FragCoord.x) * 1973u + uint(gl_FragCoord.y) * 9277u + uint(frame.misc.x) * 26699u) | 1u;
             rnd();
             vec3 o = vWorld + geoN * (surfModel ? 1.5 : 0.75);
-            vec3 direct = lampDirect(vWorld, geoN, o, surfModel ? 3u : 1u, 8);
+            vec3 spec;
+            vec3 direct = lampDirect(vWorld, nb, o, surfModel ? 3u : 1u, 8, v, max(texInfo[tex].shininess, 4.0), spec);
+            specOut = spec * texInfo[tex].spec * frame.mat.y * frame.lightScale.rgb;
             vec3 bounce = bounceRadiance(o, cosineDir(geoN, vec2(rnd(), rnd()))) * frame.gi.y;
             vec3 scale = frame.lightScale.rgb * frame.lightScale.a;
             // keep only the dynamic-light part of the classic term: the baked part is what the rays replace
@@ -437,17 +461,22 @@ void main() {
         }
     }
 #endif
-    vec3 color = tx.rgb * light;
+    vec3 color = tx.rgb * light + specOut;
     // the texture's fullbright layer; in the composed path the resolve applies it, so it bypasses the light filter
     float fbMask = ((tflags & T_FULLBRIGHT) != 0u && !alphaOpacity) ? tx.a : 0.0;
     if (!composed) color = mix(color, tx.rgb, fbMask);
 
 #ifdef RT
     bool water = (I.flags & I_WATER) != 0u;
-    if (rtOn > 0.5 && (I.flags & (I_SKY | I_CLOSE)) == 0u && ((I.flags & I_UNLIT) == 0u || water)) {
+    // d3d.ren's chrome: the environment map is drawn first and the skin blended over it with alpha = skin texture alpha
+    // x object alpha, so (1 - that) is the game's own per-texel reflectivity on FLAG_ENVIRONMENTMAP models
+    float chrome = 0.0;
+    if ((I.flags & I_CHROME) != 0u) chrome = clamp(1.0 - ((tflags & T_ALPHA) != 0u ? tx.a : 1.0) * I.light.a, 0.0, 1.0);
+    bool close = (I.flags & I_CLOSE) != 0u;
+    if (rtOn > 0.5 && (I.flags & I_SKY) == 0u && (!close || chrome > 0.0) && ((I.flags & I_UNLIT) == 0u || water)) {
         float noise = interleavedNoise(gl_FragCoord.xy, frame.misc.x);
         // ---- ambient occlusion: short rays over the hemisphere, modulating the baked light
-        if (frame.rt.w > 0.5 && !water && !composed) {
+        if (frame.rt.w > 0.5 && !water && !composed && !close) {
             const int N = 2;
             float occ = 0.0;
             for (int k = 0; k < N; k++) {
@@ -460,10 +489,11 @@ void main() {
         float ndv = clamp(dot(geoN, v), 0.0, 1.0);
         // chrome models: the original's fixed skin / environment mix; water: stronger at grazing angles; other
         // surfaces: a keyword-derived gloss with a Fresnel curve (not from the game's data)
-        float fres = max(gloss * (0.25 + 0.75 * pow(1.0 - ndv, 4.0)),
-                         I.light.a * (water ? 0.4 + 0.6 * pow(1.0 - ndv, 3.0) : 1.0));
+        float fres = max(close ? 0.0 : gloss * (0.25 + 0.75 * pow(1.0 - ndv, 4.0)),
+                         water ? I.light.a * (0.4 + 0.6 * pow(1.0 - ndv, 3.0)) : chrome);
         if (frame.rt.z > 0.5 && fres > 0.01) {
-            vec3 rdir = reflect(-v, geoN);
+            vec3 rdir = reflect(-v, normalize(mix(geoN, nb, 0.6)));
+            if (dot(rdir, geoN) < 0.02) rdir = reflect(-v, geoN);
             vec3 rcol = traceRadiance(origin, rdir, 6000.0);
             color = mix(color, rcol, clamp(fres * frame.rt.z, 0.0, 1.0));
         }

@@ -98,7 +98,7 @@ void Renderer::createStatic() {
     lightBuf = gfx.createBuffer(kMaxLights * sizeof(GLight), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
     texInfoBuf = gfx.createBuffer(kMaxTextures * sizeof(GTexInfo), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
     frameBuf = gfx.createBuffer(sizeof(GFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
-    texInfoCpu.assign(kMaxTextures, GTexInfo{0, 0});
+    texInfoCpu.assign(kMaxTextures, GTexInfo{0, 0, 0, 0});
     memset(texInfoBuf.mapped, 0, kMaxTextures * sizeof(GTexInfo));
     if (gfx.rt)
         tlasInstBuf = gfx.createBuffer(kMaxTlas * sizeof(VkAccelerationStructureInstanceKHR),
@@ -118,7 +118,10 @@ void Renderer::createStatic() {
     white = gfx.createImage(1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     uint8_t wpx[4] = {255, 255, 255, 255};
     gfx.uploadImage(white, wpx, 1);
-    for (uint32_t i = 0; i < kMaxTextures; i++) writeTextureSlot(i, white.view);
+    flatNormal = gfx.createImage(1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    uint8_t fpx[4] = {128, 128, 255, 255};
+    gfx.uploadImage(flatNormal, fpx, 1);
+    for (uint32_t i = 0; i < kMaxTextures; i++) writeTextureSlot(i, (i >= kMaxTextures / 2 && i != kTexLightmap) ? flatNormal.view : white.view);
 
     for (int r = 0; r < (gfx.rt ? 2 : 1); r++)
         for (int p = 0; p < P_COUNT; p++) pipes[r][p] = makeScenePipeline((Pipe)p, r == 1);
@@ -366,12 +369,29 @@ void Renderer::onTerm() {
     frameInFlight = false;
     onWorldEnd();
     for (uint32_t i = 1; i < kMaxTextures; i++) if (textures[i].img) { gfx.destroy(textures[i]); writeTextureSlot(i, white.view); }
+    for (uint32_t i = 1; i < kMaxTextures / 2 - 1; i++) if (normalMaps[i].img) { gfx.destroy(normalMaps[i]); writeTextureSlot(i + kMaxTextures / 2, flatNormal.view); }
     models.clear(); historyMap.clear();
     sceneValid = false; extraScenes.clear();
     gfx.destroy(dynBlas); gfx.destroy(tlas);
     destroyTargets(); gfx.destroy(overlayImg);
     gfx.destroySwapchain(true);
     if (viewWindow) { PostMessageA(viewWindow, WM_CLOSE, 0, 0); viewWindow = nullptr; }
+}
+
+// Highlights are not part of LT1 data either: specular strength and shininess per texture from name keywords.
+static void SpecFromName(const char *name, float &spec, float &shininess) {
+    static const struct { const char *key; float spec, shin; } table[] = {
+        {"chrome", 0.9f, 80}, {"metal", 0.6f, 40}, {"steel", 0.65f, 48}, {"iron", 0.45f, 28}, {"pipe", 0.5f, 32}, {"rail", 0.5f, 32},
+        {"glass", 0.8f, 96}, {"window", 0.7f, 80}, {"tile", 0.55f, 56}, {"marble", 0.6f, 64}, {"floor", 0.3f, 28}, {"lino", 0.4f, 40},
+        {"water", 0.8f, 96}, {"ice", 0.7f, 64}, {"wet", 0.6f, 48}, {"plastic", 0.4f, 32}, {"leather", 0.3f, 20}, {"wood", 0.2f, 16},
+        {"weapon", 0.6f, 40}, {"gun", 0.6f, 40}, {"_pv", 0.6f, 40}, {"skin", 0.15f, 12}, {"brick", 0.08f, 10}, {"concrete", 0.1f, 10},
+        {"stone", 0.12f, 12}, {"dirt", 0.04f, 8}, {"grass", 0.04f, 8}, {"cloth", 0.05f, 8}, {"carpet", 0.03f, 6}};
+    char lower[96];
+    size_t i = 0;
+    for (; name[i] && i < sizeof(lower) - 1; i++) lower[i] = (char)tolower((unsigned char)name[i]);
+    lower[i] = 0;
+    spec = 0.18f; shininess = 16;
+    for (auto &t : table) if (strstr(lower, t.key)) { spec = t.spec; shininess = t.shin; return; }
 }
 
 // Reflectivity is not part of LT1 data: a keyword table on the texture's file name stands in for materials.
@@ -432,7 +452,35 @@ void Renderer::onTexUpload(const lr::TexUploadCmd &c, const uint8_t *p) {
         ts.fbCoverage = (float)nfb / n0;
         texStats[c.id] = ts;
     }
-    GTexInfo ti = {alphaMask ? T_ALPHA : (fullbright ? T_FULLBRIGHT : 0u), GlossFromName(c.name)};
+    GTexInfo ti = {alphaMask ? T_ALPHA : (fullbright ? T_FULLBRIGHT : 0u), GlossFromName(c.name), 0, 0};
+    SpecFromName(c.name, ti.spec, ti.shininess);
+    // ---- generated normal map: the texture's luminance as a height field (slightly smoothed), central differences
+    if (c.id < kMaxTextures / 2 - 1) {
+        std::vector<uint8_t> npx;
+        size_t src = 0;
+        for (uint32_t m = 0; m < c.nMips; m++) {
+            int w = (int)std::max(1u, c.width >> m), h = (int)std::max(1u, c.height >> m);
+            std::vector<float> ht((size_t)w * h), sm((size_t)w * h);
+            for (int i = 0; i < w * h; i++) { const uint8_t *o = &px[src + (size_t)i * 4]; ht[i] = (o[0] * 0.299f + o[1] * 0.587f + o[2] * 0.114f) / 255.0f; }
+            auto at = [&](const std::vector<float> &v, int x, int y) { return v[(size_t)((y + h) % h) * w + ((x + w) % w)]; };
+            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++)
+                sm[(size_t)y * w + x] = (at(ht, x, y) * 4 + at(ht, x - 1, y) + at(ht, x + 1, y) + at(ht, x, y - 1) + at(ht, x, y + 1)) / 8.0f;
+            size_t o0 = npx.size(); npx.resize(o0 + (size_t)w * h * 4);
+            float k = 2.2f / (float)(1 << m);       // keep the relief's world-space slope across mips
+            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+                float dx = (at(sm, x + 1, y) - at(sm, x - 1, y)) * k, dy = (at(sm, x, y + 1) - at(sm, x, y - 1)) * k;
+                float il = 1.0f / sqrtf(dx * dx + dy * dy + 1.0f);
+                uint8_t *o = &npx[o0 + ((size_t)y * w + x) * 4];
+                o[0] = (uint8_t)std::clamp(-dx * il * 127.5f + 127.5f, 0.0f, 255.0f); o[1] = (uint8_t)std::clamp(-dy * il * 127.5f + 127.5f, 0.0f, 255.0f);
+                o[2] = (uint8_t)std::clamp(il * 127.5f + 127.5f, 0.0f, 255.0f); o[3] = (uint8_t)(sm[(size_t)y * w + x] * 255.0f);
+            }
+            src += (size_t)w * h * 4;
+        }
+        if (normalMaps[c.id].img) gfx.destroy(normalMaps[c.id]);
+        normalMaps[c.id] = gfx.createImage(c.width, c.height, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, c.nMips);
+        gfx.uploadImage(normalMaps[c.id], npx.data(), c.nMips);
+        writeTextureSlot(c.id + kMaxTextures / 2, normalMaps[c.id].view);
+    }
     texInfoCpu[c.id] = ti;
     ((GTexInfo *)texInfoBuf.mapped)[c.id] = ti;
 }
@@ -442,7 +490,8 @@ void Renderer::onTexFree(uint32_t id) {
     if (frameInFlight) { vkWaitForFences(gfx.dev, 1, &fence, VK_TRUE, UINT64_MAX); }
     writeTextureSlot(id, white.view);
     gfx.destroy(textures[id]);
-    ((GTexInfo *)texInfoBuf.mapped)[id] = texInfoCpu[id] = GTexInfo{0, 0};
+    if (id < kMaxTextures / 2 - 1 && normalMaps[id].img) { writeTextureSlot(id + kMaxTextures / 2, flatNormal.view); gfx.destroy(normalMaps[id]); }
+    ((GTexInfo *)texInfoBuf.mapped)[id] = texInfoCpu[id] = GTexInfo{0, 0, 0, 0};
 }
 
 void Renderer::onWorldBegin(const lr::WorldBeginCmd &c, const uint8_t *p) {
@@ -822,7 +871,8 @@ void Renderer::addModel(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const
     gi.color[3] = chrome ? 1.0f : o.rgba[3] / 255.0f;
     if (!(mp.hookFlags & lr::MHF_USETEXTURE) || !mp.skinTex) gi.flags |= I_NOTEXTURE;
     // no alpha test: d3d.ren never enables it. A solid model ignores its skin's alpha mask; a translucent one blends by it.
-    if (chrome) { gi.flags |= I_CHROME; gi.light[3] = std::max(1.0f - o.rgba[3] / 255.0f, 0.15f); }
+    // the shader derives reflectivity per texel: 1 - skin alpha x object alpha (light.a carries the object alpha)
+    if (chrome) { gi.flags |= I_CHROME; gi.light[3] = o.rgba[3] / 255.0f; }
     if (close) gi.flags |= I_CLOSE;
     if (sky) gi.flags |= I_SKY | I_UNLIT;
 
@@ -1058,6 +1108,7 @@ void Renderer::buildScene(const lr::SceneCmd &sc) {
     f.skyColor[0] = settings.fogEnable != 0 ? f.fogColor[0] : 0.25f; f.skyColor[1] = settings.fogEnable != 0 ? f.fogColor[1] : 0.27f;
     f.skyColor[2] = settings.fogEnable != 0 ? f.fogColor[2] : 0.32f;
     f.viewport[0] = sceneViewport.x; f.viewport[1] = sceneViewport.y; f.viewport[2] = sceneViewport.width; f.viewport[3] = sceneViewport.height;
+    f.mat[0] = rtOn ? settings.bump : 0.0f; f.mat[1] = settings.specular;
     f.gi[0] = (rtOn && settings.rtGI != 0 && lampGrid.count) ? 1.0f : 0.0f;
     f.gi[1] = settings.giIndirect; f.gi[2] = settings.giDirect > 0 ? settings.giDirect : 1.0f; f.gi[3] = 6.0f;
     f.skyEye[0] = skyEye.x; f.skyEye[1] = skyEye.y; f.skyEye[2] = skyEye.z;

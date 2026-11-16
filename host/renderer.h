@@ -17,12 +17,13 @@ struct GInstance {
 };
 struct GSurface { uint32_t tex, flags, pad0, pad1; };
 struct GLight { float posRadius[4]; float color[4]; };
-struct GTexInfo { uint32_t flags; float gloss; };
+struct GTexInfo { uint32_t flags; float gloss; float spec; float shininess; };
 struct GLamp { float posRadius[4]; float color[4]; float spot[4]; };
 struct GLampGrid { float origin[4]; int32_t dims[3]; uint32_t count; };
 struct GFrame {
     M4 viewProj[3]; M4 prevViewProj[3];
     float camPos[4], fogColor[4], fogParams[4], lightScale[4], modelLightDir[4], rt[4], misc[4], skyColor[4], viewport[4];
+    float mat[4];               // invented materials: bump strength, specular scale
     float gi[4];                // full ray-traced lighting: enabled, indirect scale, direct scale, lamp radius
     float skyEye[4];
     float ambient[4];           // rgb: the level's lightmap ambient (minimum texel), a: lamp shadows enabled
@@ -130,6 +131,7 @@ private:
     Image sceneLight, lightHist[2], litColor;       // full ray-traced lighting: raw estimate, accumulated history, resolved scene
     bool lightHistValid = false;
     Image textures[kMaxTextures];
+    Image normalMaps[kMaxTextures / 2], flatNormal;   // generated from the textures; bound at slot id + 2048
     std::vector<GTexInfo> texInfoCpu;
     Buffer lampBuf, lampDataBuf;
     Buffer vbuf, ibuf, instBuf, triBuf, surfBuf, lightBuf, texInfoBuf, frameBuf, tlasInstBuf, scratch, shotBuf;

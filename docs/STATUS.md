@@ -56,6 +56,8 @@ Last updated 2026-11-16 (first session, with the user playing the game during th
 
 * Mode switch from the options menu.
 * Polygrids (water) and their reflections, particle systems, line systems, glow/bias/no-Z sprites, fog.
+* Generated normal maps and keyword specular (seen working in the train level's light buffer; look and strength not
+  yet judged by the user). Polygrid normals from real grid spacing (no water seen yet).
 * Chrome models reflecting by `1 - alpha` and the removal of the model alpha test (the view pistol showed see-through
   parts before it): built and deployed, not yet confirmed by the user.
 * Emitters lighting their surroundings in levels other than the train.

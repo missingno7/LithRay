@@ -195,10 +195,12 @@ void Renderer::addPolyGrid(const lr::SceneCmd &sc, const lr::ObjectRecord &o, co
         for (uint32_t x = 0; x < W; x++) {
             int s = sample(x, z);
             const float *c = colors + (uns ? (s & 255) : s + 128) * 4;
-            // surface normal from the height field (for reflections)
-            float dx = (float)(sample(std::min(x + 1, W - 1), z) - sample(x > 0 ? x - 1 : 0, z));
-            float dz = (float)(sample(x, std::min(z + 1, H - 1)) - sample(x, z > 0 ? z - 1 : 0));
-            V3 n = normalize(grid.dir(V3{-dx * 0.5f, 1.0f, -dz * 0.5f}));
+            // surface normal from the neighbouring grid points in world space (real spacing and height scale)
+            uint32_t x0 = x > 0 ? x - 1 : 0, x1 = std::min(x + 1, W - 1), z0 = z > 0 ? z - 1 : 0, z1 = std::min(z + 1, H - 1);
+            V3 px0 = grid.point(V3{(float)x0, (float)sample(x0, z), (float)z}), px1 = grid.point(V3{(float)x1, (float)sample(x1, z), (float)z});
+            V3 pz0 = grid.point(V3{(float)x, (float)sample(x, z0), (float)z0}), pz1 = grid.point(V3{(float)x, (float)sample(x, z1), (float)z1});
+            V3 n = normalize(cross(pz1 - pz0, px1 - px0));
+            if (dot(n, grid.dir(V3{0, 1, 0})) < 0) n = n * -1.0f;
             uint32_t color = packColor(c[0] * sc.lightScale.x / 255, c[1] * sc.lightScale.y / 255, c[2] * sc.lightScale.z / 255, c[3] * alphaScale / 255);
             setVertex(v[z * W + x], grid.point(V3{(float)x, (float)s, (float)z}), color, (x + uOff / tw) * uScale, (z + vOff / th) * vScale, n);
         }

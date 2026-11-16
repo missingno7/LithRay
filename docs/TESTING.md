@@ -80,6 +80,7 @@ Saved to `autoexec.cfg` like any engine variable.
 | `lr_RTAO` | 1 | ray-traced ambient occlusion (lightmap mode) |
 | `lr_RTGI` | 1 | 1 = full ray-traced lighting (lamps + bounce + emitters, no lightmaps); 0 = lightmaps with ray-traced shadows |
 | `lr_GIDirect` / `lr_GIIndirect` / `lr_GIEmissive` | 1 / 1.3 / 1 | strength of lamps, bounce light and emitters |
+| `lr_Bump` / `lr_Specular` | 1 / 1 | strength of the generated normal maps / highlights (invented materials) |
 | `lr_GIHistory` | 0.9 | weight of the accumulated lighting history (lower = less lag, more noise) |
 | `lr_VSync` | 1 | FIFO, else mailbox / immediate |
 | `lr_MaxFPS` | 0 | frame cap (forced to 100 while the game-speed patch is not applied) |

@@ -11,7 +11,7 @@
 namespace lr {
 
 constexpr uint32_t kMagic = 0x5941524c;      // 'LRAY'
-constexpr uint32_t kVersion = 9;
+constexpr uint32_t kVersion = 10;
 constexpr uint32_t kHeaderSize = 4096;
 constexpr uint32_t kArenaSize = 64u << 20;
 
@@ -166,7 +166,8 @@ struct Settings {
     float vsync, maxFps, debugView, exposure, widescreen;
     float giDirect, giIndirect, giHistory;      // full ray-traced lighting: lamp scale, bounce scale, history weight
     float giEmissive;                           // strength of light emitted by bright surfaces and fullbright texels
-    float reserved[8];
+    float bump, specular;                       // invented materials: generated normal-map strength, highlight strength
+    float reserved[6];
 };
 
 struct SceneCmd {

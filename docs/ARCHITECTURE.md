@@ -148,8 +148,17 @@ shoulder above mid-grey instead of the bake's clamp. `lr_GIDirect`, `lr_GIIndire
 contributions.
 
 Reflections (one mirror ray, hit shaded by the lamps in full mode or by its lightmap otherwise) follow the engine's
-own flags: a model with `FLAG_ENVIRONMENTMAP` reflects by `1 - object alpha` (d3d.ren's chrome pass blends the skin
-over the environment map by that alpha), a polygrid reflects when it has an environment map. A keyword table on
+own data: on a model with `FLAG_ENVIRONMENTMAP` d3d.ren draws the environment map first and blends the skin over it
+with alpha = skin texture alpha x object alpha, so `1 - that` is the game's per-texel reflectivity (the skin's 4-bit
+alpha mask is in effect a reflectivity map: the view pistol's slide). This includes the view model. A polygrid
+reflects when it has an environment map.
+
+Invented materials (not game data; `lr_Bump`, `lr_Specular`, 0 turns each off): at texture upload the host generates
+a normal map from the texture's own luminance (smoothed height field, central differences, one per mip) and binds it
+at slot `id + 2048`; the fragment shader applies it in a cotangent frame built from screen-space derivatives (no
+vertex tangents exist). Specular strength and shininess per texture come from a keyword table on the file name. Both
+feed the lamp loop of the full ray-traced mode (relief under lamps, Blinn-Phong highlights with the lamp's shadow
+ray) and slightly perturb reflection rays. A keyword table on
 texture names adds a Fresnel-weighted gloss to some world surfaces; that part is not game data.
 
 Sky (reconstruction `port_notes/sky.md`): drawn first from the sky camera, which sits at the player's fractional

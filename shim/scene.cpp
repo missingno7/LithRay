@@ -543,6 +543,7 @@ static void FillSettings(lr::Settings &s) {
     s.rtAO = CVar("lr_RTAO", 1); s.rtGI = CVar("lr_RTGI", 1);
     s.giDirect = CVar("lr_GIDirect", 0.9f); s.giIndirect = CVar("lr_GIIndirect", 1); s.giHistory = CVar("lr_GIHistory", 0.9f);
     s.giEmissive = CVar("lr_GIEmissive", 1);
+    s.bump = CVar("lr_Bump", 1); s.specular = CVar("lr_Specular", 1);
     s.vsync = CVar("lr_VSync", 1); s.maxFps = CVar("lr_MaxFPS", 0); s.debugView = CVar("lr_DebugView", 0);
     s.exposure = CVar("lr_Exposure", 1); s.widescreen = CVar("lr_Widescreen", 1);
 }
