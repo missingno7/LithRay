@@ -51,6 +51,84 @@ float traceVisibility(vec3 origin, vec3 dir, float tmax) {
     return rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
 }
 
+float traceMasked(vec3 origin, vec3 dir, float tmax, uint mask) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, mask, origin, 0.25, dir, tmax);
+    while (rayQueryProceedEXT(rq)) {}
+    return rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+}
+
+// ---- the level's static lamps (host/lamps.cpp). Terms are in lightmap units: the bake was
+// ambient + colour * BrightScale * (1 - d/r) * cone, one-sided.
+vec3 lampAt(Lamp l, vec3 p, out vec3 toLamp, out float dist) {
+    toLamp = l.posRadius.xyz - p;
+    dist = length(toLamp);
+    if (dist >= l.posRadius.w) return vec3(0.0);
+    float f = 1.0 - dist / l.posRadius.w;
+    if (l.spot.w > -1.5) {
+        float c = dist > 0.001 ? dot(l.spot.xyz, -toLamp) / dist : 1.0;
+        f *= max((c - l.spot.w) / (1.0 - l.spot.w), 0.0);
+    }
+    return l.color.rgb * f;
+}
+bool lampCell(vec3 p, out uint begin, out uint end) {
+    ivec3 c = ivec3(floor((p - frame.lampGridOrigin.xyz) / frame.lampGridOrigin.w));
+    if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, frame.lampGridDims))) return false;
+    uint i = uint((c.z * frame.lampGridDims.y + c.y) * frame.lampGridDims.x + c.x);
+    begin = lampData[i]; end = lampData[i + 1u];
+    return end > begin;
+}
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+// Baked light with the lamps taken out where something that was not in the bake (models, doors) now blocks them.
+// Only light the bake shows arrived is removed, and never below the level's ambient.
+vec3 worldLampShadows(vec3 baked, vec3 p, vec3 n, vec3 origin, uint mask) {
+    uint b, e;
+    if (!lampCell(p, b, e)) return baked;
+    vec3 direct = max(baked - frame.ambient.rgb, vec3(0.0));
+    float received = luma(direct);
+    if (received < 0.01) return baked;
+    vec3 loss = vec3(0.0);
+    int rays = 0;
+    for (uint k = b; k < e && rays < 12; k++) {
+        Lamp l = lamps[lampData[k]];
+        if ((uint(l.color.w) & 1u) == 0u) continue;
+        vec3 to; float d;
+        vec3 c = lampAt(l, p, to, d);
+        float expected = luma(c);
+        if (expected < 0.02 || dot(n, to) <= 0.0) continue;
+        rays++;
+        if (traceMasked(origin, to / d, max(d - 2.0, 0.0), mask) < 0.5) loss += c * smoothstep(0.25, 0.75, received / expected);
+    }
+    return baked - min(loss, direct);
+}
+
+// Model lighting from the lamps: each lamp that lit models in the bake, shadowed by everything, replaces its share of
+// the light grid's directional term; what the lamps do not explain stays as the classic stepped term.
+vec3 modelLampLight(Instance I, vec3 p, vec3 n, vec3 origin, float classicStep) {
+    uint b, e;
+    if (!lampCell(p, b, e)) return I.color.rgb + I.light.rgb * classicStep;
+    vec3 lit = vec3(0.0), unshadowed = vec3(0.0);
+    int rays = 0;
+    for (uint k = b; k < e; k++) {
+        Lamp l = lamps[lampData[k]];
+        if ((uint(l.color.w) & 2u) == 0u) continue;
+        vec3 to; float d;
+        vec3 c = lampAt(l, p, to, d);
+        if (luma(c) < 0.02) continue;
+        unshadowed += c;
+        float ndl = clamp(dot(n, to / d) * 0.55 + 0.45, 0.0, 1.0);
+        if (ndl <= 0.0) continue;
+        float vis = 1.0;
+        if (rays < 10) { vis = traceMasked(origin, to / d, max(d - 2.0, 0.0), 0xffu); rays++; }
+        lit += c * ndl * vis;
+    }
+    // keep the frame's energy: lamps may sum to more than the grid recorded (the bake clamps)
+    float scale = min(1.0, luma(I.light.rgb) / max(luma(unshadowed), 0.001));
+    vec3 residual = max(I.light.rgb - unshadowed, vec3(0.0));
+    return I.color.rgb + residual * classicStep + lit * scale;
+}
+
 // Classic shading of whatever a ray hit (no recursion): albedo x baked light.
 vec3 shadeHit(rayQueryEXT rq, vec3 origin, vec3 dir) {
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) return frame.skyColor.rgb;
@@ -120,8 +198,9 @@ void main() {
     float dist = length(toCam);
     vec3 v = toCam / max(dist, 0.001);
     if (dot(n, v) < 0.0 && (I.flags & (I_MODEL | I_WORLD)) == 0u) n = -n;
+    // world polygons are one-sided (d3d.ren culls by the polygon's plane); the camera may sit inside a brush
+    if (world && dot(n, toCam) < 0.0) discard;
     vec3 geoN = n;
-    if (world && dot(n, v) < 0.0) geoN = -n;
 
     float alpha = I.color.a;
     if ((tflags & T_ALPHA) != 0u) alpha *= tx.a;
@@ -138,9 +217,19 @@ void main() {
     if (world) {
         light = (sflags & SURF_LIGHTMAP) != 0u ? texture(textures[TEX_LIGHTMAP], vLm).rgb
               : ((sflags & SURF_BRIGHT) != 0u ? vec3(1.0) : vColor.rgb);
+#ifdef RT
+        if (frame.ambient.a > 0.5 && (sflags & (SURF_LIGHTMAP | SURF_BRIGHT)) == SURF_LIGHTMAP)
+            light = worldLampShadows(light, vWorld, geoN, vWorld + geoN * 0.75, (I.flags & I_SKY) != 0u ? 0u : (vInstance == 1u ? 0x06u : 0x02u));
+#endif
         light *= frame.lightScale.rgb * frame.lightScale.a;
     } else if ((I.flags & I_MODEL) != 0u) {
         light = modelLight(I, n);
+#ifdef RT
+        if (frame.ambient.a > 0.5 && (I.flags & (I_CLOSE | I_SKY)) == 0u) {
+            float s = clamp(floor(dot(n, frame.modelLightDir.xyz) * 7.94 + 8.0), 0.0, 15.0) / 16.0;
+            light = modelLampLight(I, vWorld, n, vWorld + n * 1.5, s);
+        }
+#endif
     } else {
         light = I.color.rgb * vColor.rgb;
         alpha *= vColor.a;

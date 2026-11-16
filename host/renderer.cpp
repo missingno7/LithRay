@@ -2,6 +2,7 @@
 #include "shaders.h"
 #include "image_io.h"
 #include <algorithm>
+#include <stdarg.h>
 
 static constexpr uint32_t kStaticVerts = 600000, kDynVerts = 500000;
 static constexpr uint32_t kStaticIndices = 2400000, kDynIndices = 1500000;
@@ -38,8 +39,8 @@ void Renderer::createStatic() {
 
     // scene set
     {
-        VkDescriptorSetLayoutBinding b[10] = {};
-        VkDescriptorBindingFlags bf[10] = {};
+        VkDescriptorSetLayoutBinding b[12] = {};
+        VkDescriptorBindingFlags bf[12] = {};
         auto stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         b[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
         bf[0] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
@@ -47,7 +48,10 @@ void Renderer::createStatic() {
         for (uint32_t i = 2; i <= 8; i++) b[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, (VkShaderStageFlags)stages, nullptr};
         b[9] = {9, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
         bf[9] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-        uint32_t n = gfx.rt ? 10 : 9;
+        b[10] = {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        b[11] = {11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        uint32_t n = 12;
+        if (!gfx.rt) { b[9] = b[10]; b[10] = b[11]; bf[9] = 0; n = 11; }
         VkDescriptorSetLayoutBindingFlagsCreateInfo fi = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
         fi.bindingCount = n; fi.pBindingFlags = bf;
         VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -62,7 +66,7 @@ void Renderer::createStatic() {
         VKC(vkCreateDescriptorSetLayout(dev, &li, nullptr, &postLayout));
     }
     VkDescriptorPoolSize ps[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures + 16}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
-                                 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2}};
+                                 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 24}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2}};
     VkDescriptorPoolCreateInfo pi = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT; pi.maxSets = 4;
     pi.poolSizeCount = gfx.rt ? 4 : 3; pi.pPoolSizes = ps;
@@ -98,11 +102,13 @@ void Renderer::createStatic() {
         tlasInstBuf = gfx.createBuffer(kMaxTlas * sizeof(VkAccelerationStructureInstanceKHR),
                                        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true);
 
-    Buffer *bufs[] = {&frameBuf, &vbuf, &ibuf, &instBuf, &triBuf, &surfBuf, &lightBuf, &texInfoBuf};
-    for (uint32_t i = 0; i < 8; i++) {
+    lampBuf = gfx.createBuffer(kMaxLamps * sizeof(GLamp), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    lampDataBuf = gfx.createBuffer((48 * 48 * 48 + 1 + 1024 * 1024) * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    Buffer *bufs[] = {&frameBuf, &vbuf, &ibuf, &instBuf, &triBuf, &surfBuf, &lightBuf, &texInfoBuf, &lampBuf, &lampDataBuf};
+    for (uint32_t i = 0; i < 10; i++) {
         VkDescriptorBufferInfo bi = {bufs[i]->buf, 0, VK_WHOLE_SIZE};
         VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        w.dstSet = sceneSet; w.dstBinding = i + 1; w.descriptorCount = 1;
+        w.dstSet = sceneSet; w.dstBinding = i < 8 ? i + 1 : i + 2; w.descriptorCount = 1;
         w.descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w.pBufferInfo = &bi;
         vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
     }
@@ -420,6 +426,16 @@ void Renderer::onWorldBegin(const lr::WorldBeginCmd &c, const uint8_t *p) {
         slots[i] = {x + 1, y + 1};
         x += w; rowH = std::max(rowH, h);
     }
+    uint32_t minTexel[3] = {31, 63, 31};
+    for (uint32_t i : order) {
+        const uint16_t *src = (const uint16_t *)(lm + wp[i].lmOffset);
+        for (uint32_t t = 0, n = (uint32_t)wp[i].lmWidth * wp[i].lmHeight; t < n; t++) {
+            minTexel[0] = std::min<uint32_t>(minTexel[0], src[t] >> 11); minTexel[1] = std::min<uint32_t>(minTexel[1], (src[t] >> 5) & 63);
+            minTexel[2] = std::min<uint32_t>(minTexel[2], src[t] & 31);
+        }
+    }
+    levelAmbient[0] = order.empty() ? 0 : minTexel[0] / 31.0f; levelAmbient[1] = order.empty() ? 0 : minTexel[1] / 63.0f;
+    levelAmbient[2] = order.empty() ? 0 : minTexel[2] / 31.0f;
     uint32_t AH = 64;
     while (AH < y + rowH) AH *= 2;
     std::vector<uint8_t> atlas((size_t)AW * AH * 4, 255);
@@ -507,7 +523,18 @@ void Renderer::onWorldBegin(const lr::WorldBeginCmd &c, const uint8_t *p) {
     grid = c.grid;
     gridData.assign(gridBytes, gridBytes + (size_t)c.grid.nSamples * 4);
     haveWorld = true;
-    historyMap.clear(); historyValid = false; prevValid = false;
+    historyMap.clear(); historyValid = false; prevValid = false; loggedKeys.clear();
+    loadLamps(c.worldFile, c.rezSources);
+    if (!lamps.empty()) {
+        memcpy(lampBuf.mapped, lamps.data(), lamps.size() * sizeof(GLamp));
+        uint32_t base = (uint32_t)lampCells.size();
+        uint32_t *ld = (uint32_t *)lampDataBuf.mapped;
+        size_t maxWords = lampDataBuf.size / 4;
+        if (lampCells.size() + lampIndices.size() <= maxWords) {
+            for (size_t i = 0; i < lampCells.size(); i++) ld[i] = lampCells[i] + base;
+            memcpy(ld + base, lampIndices.data(), lampIndices.size() * 4);
+        } else { Log("lamp grid too large: lamp shadows off"); lampGrid.count = 0; }
+    }
     Log("world '%s': %u bsps, %u polys, %u vertices, %u triangles, lightmap atlas %ux%u (%zu lightmaps)", c.worldName, c.nBsps, c.nPolys,
         c.nVertices, staticTris, AW, AH, order.size());
 }
@@ -520,7 +547,7 @@ void Renderer::onWorldEnd() {
     bsps.clear(); surfaces.clear(); polyFirstVertex.clear(); polyVertexCount.clear();
     if (textures[kTexLightmap].img) { writeTextureSlot(kTexLightmap, white.view); gfx.destroy(textures[kTexLightmap]); }
     staticVerts = staticIndices = staticTris = 0;
-    haveWorld = false; sceneValid = false; gridData.clear(); historyMap.clear();
+    haveWorld = false; sceneValid = false; gridData.clear(); historyMap.clear(); lamps.clear(); lampGrid = GLampGrid();
 }
 
 void Renderer::onModelDef(const lr::ModelDefCmd &c, const uint8_t *p) {
@@ -555,6 +582,13 @@ void Renderer::onOverlay(const lr::OverlayCmd &c, const uint8_t *p) {
 }
 
 void Renderer::onScreenshot(const lr::ScreenshotCmd &c) { shotPath = c.path; shotFormat = c.format; }
+
+void Renderer::logOnce(uint32_t key, const char *fmt, ...) {
+    if (loggedKeys.size() >= 400 || loggedKeys[key]++) return;
+    char buf[512];
+    va_list a; va_start(a, fmt); vsnprintf(buf, sizeof(buf), fmt, a); va_end(a);
+    Log("%s", buf);
+}
 
 // ------------------------------------------------------------------ frame building
 uint32_t Renderer::pushInstance(const GInstance &i) {
@@ -635,13 +669,9 @@ void Renderer::addModel(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const
 
     uint32_t nFaces = 0;
     for (auto &f : def.faces) if (!hidden[f.nodeSelector & 255]) nFaces++;
-    {
-        static std::unordered_map<uint32_t, int> seen;
-        if (seen.size() < 40 && !seen[o.key]++)
-            Log("model obj %08x '%s' faces %u/%zu hidden %u nodes %u deform %u rgba %u,%u,%u,%u flags %08x role %u skin %u amb %.0f,%.0f,%.0f pos %.0f,%.0f,%.0f scale %.2f,%.2f,%.2f",
-                o.key, def.name.c_str(), nFaces, def.faces.size(), mp.nHidden, mp.nNodes, mp.nDeform, o.rgba[0], o.rgba[1], o.rgba[2], o.rgba[3], o.flags, o.role,
-                mp.skinTex, mp.lightAdd.x, mp.lightAdd.y, mp.lightAdd.z, o.pos.x, o.pos.y, o.pos.z, o.scale.x, o.scale.y, o.scale.z);
-    }
+    logOnce(o.key, "model obj %08x '%s' faces %u hidden %u nodes %u rgba %u,%u,%u,%u flags %08x role %u skin %u amb %.0f,%.0f,%.0f pos %.0f,%.0f,%.0f",
+            o.key, def.name.c_str(), nFaces, mp.nHidden, mp.nNodes, o.rgba[0], o.rgba[1], o.rgba[2], o.rgba[3], o.flags, o.role,
+            mp.skinTex, mp.lightAdd.x, mp.lightAdd.y, mp.lightAdd.z, o.pos.x, o.pos.y, o.pos.z);
     if (!nFaces) return;
     bool sky = (o.role & lr::OBJ_SKY) != 0, close = (o.flags & lr::FLAG_REALLYCLOSE) != 0 || (o.role & lr::OBJ_VIEWLIST) != 0;
     bool translucent = o.rgba[3] != 255;
@@ -735,9 +765,14 @@ void Renderer::addObject(const lr::SceneCmd &sc, const lr::ObjectRecord &o) {
         if (gfx.rt && !sky && !translucent && b.blas.as && tlasInstances.size() < kMaxTlas) {
             VkAccelerationStructureInstanceKHR ti = {};
             memcpy(ti.transform.matrix, xf.m, 48);
-            ti.instanceCustomIndex = inst; ti.mask = 0xff; ti.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+            ti.instanceCustomIndex = inst; ti.mask = 0x04; ti.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
             ti.accelerationStructureReference = b.blas.addr;
             tlasInstances.push_back(ti);
+        }
+        {
+            V3 ext = b.bmax - b.bmin;
+            logOnce(o.key, "worldmodel obj %08x bsp %u tris %u size %.0f,%.0f,%.0f pos %.0f,%.0f,%.0f alpha %u flags %08x role %u%s", o.key, wm.bsp, b.nTris,
+                    ext.x, ext.y, ext.z, xf.m[0][3], xf.m[1][3], xf.m[2][3], o.rgba[3], o.flags, o.role, translucent ? " translucent" : "");
         }
         break;
     }
@@ -750,7 +785,7 @@ void Renderer::addObject(const lr::SceneCmd &sc, const lr::ObjectRecord &o) {
         lights.push_back(l);
         break;
     }
-    case lr::OT_SPRITE: addSprite(sc, o, *(const lr::SpritePayload *)payload); break;
+    case lr::OT_SPRITE: addSprite(sc, o, payload); break;
     case lr::OT_PARTICLESYSTEM: addParticles(sc, o, payload); break;
     case lr::OT_POLYGRID: addPolyGrid(sc, o, payload); break;
     case lr::OT_LINESYSTEM: addLines(sc, o, payload); break;
@@ -771,7 +806,7 @@ void Renderer::addWorldDraws(const lr::SceneCmd &sc) {
     if (gfx.rt && b.blas.as) {
         VkAccelerationStructureInstanceKHR ti = {};
         memcpy(ti.transform.matrix, id.m, 48);
-        ti.instanceCustomIndex = inst; ti.mask = 0xff; ti.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        ti.instanceCustomIndex = inst; ti.mask = 0x01; ti.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
         ti.accelerationStructureReference = b.blas.addr;
         tlasInstances.push_back(ti);
     }
@@ -903,6 +938,9 @@ void Renderer::buildScene(const lr::SceneCmd &sc) {
     f.skyColor[0] = settings.fogEnable != 0 ? f.fogColor[0] : 0.25f; f.skyColor[1] = settings.fogEnable != 0 ? f.fogColor[1] : 0.27f;
     f.skyColor[2] = settings.fogEnable != 0 ? f.fogColor[2] : 0.32f;
     f.viewport[0] = sceneViewport.x; f.viewport[1] = sceneViewport.y; f.viewport[2] = sceneViewport.width; f.viewport[3] = sceneViewport.height;
+    f.ambient[0] = levelAmbient[0]; f.ambient[1] = levelAmbient[1]; f.ambient[2] = levelAmbient[2];
+    f.ambient[3] = (rtOn && settings.rtShadows != 0 && lampGrid.count) ? 1.0f : 0.0f;
+    f.lampGrid = lampGrid;
     f.nLights = (uint32_t)lights.size();
     memcpy(frameBuf.mapped, &f, sizeof(f));
     memcpy(instBuf.mapped, instances.data(), instances.size() * sizeof(GInstance));
@@ -924,7 +962,7 @@ void Renderer::buildAccel(VkCommandBuffer c) {
             ((GInstance *)instBuf.mapped)[inst] = cont;
             VkAccelerationStructureInstanceKHR ti = {};
             memcpy(ti.transform.matrix, id.m, 48);
-            ti.instanceCustomIndex = inst; ti.mask = 0xff; ti.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+            ti.instanceCustomIndex = inst; ti.mask = 0x02; ti.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
             ti.accelerationStructureReference = dynBlas.addr;
             tlasInstances.push_back(ti);
         }

@@ -35,6 +35,7 @@ struct Instance {
 struct Surface { uint tex; uint flags; uint pad0, pad1; };
 struct Light { vec4 posRadius; vec4 color; };     // colour: signed, classic 2c-1 per channel
 struct TexInfo { uint flags; float gloss; };
+struct Lamp { vec4 posRadius; vec4 color; vec4 spot; };   // color.w: 1 lit the world, 2 lit models, 4 clipped; spot: dir, cos(half fov) or -2
 
 layout(set = 0, binding = 0) uniform sampler2D textures[MAX_TEXTURES];
 layout(set = 0, binding = 1, scalar, row_major) uniform Frame {
@@ -49,6 +50,9 @@ layout(set = 0, binding = 1, scalar, row_major) uniform Frame {
     vec4 misc;                      // frame index, debug view, time, exposure
     vec4 skyColor;                  // what rays see when they leave the world
     vec4 viewport;                  // scene viewport in pixels: x, y, w, h
+    vec4 ambient;                   // rgb: level lightmap ambient, a: static lamp shadows on
+    vec4 lampGridOrigin;            // xyz: grid origin, w: cell size
+    ivec3 lampGridDims; uint lampCount;
     uint nLights; uint pad0, pad1, pad2;
 } frame;
 layout(set = 0, binding = 2, scalar) readonly buffer Vertices { Vertex vertices[]; };
@@ -58,6 +62,8 @@ layout(set = 0, binding = 5, scalar) readonly buffer TriTable { uint triTable[];
 layout(set = 0, binding = 6, scalar) readonly buffer Surfaces { Surface surfaces[]; };
 layout(set = 0, binding = 7, scalar) readonly buffer Lights { Light lights[]; };
 layout(set = 0, binding = 8, scalar) readonly buffer TexInfos { TexInfo texInfo[]; };
+layout(set = 0, binding = 10, scalar) readonly buffer Lamps { Lamp lamps[]; };
+layout(set = 0, binding = 11, scalar) readonly buffer LampData { uint lampData[]; };    // cell offsets (ncells + 1), then lamp indices
 
 #define SURF_SKY 0x10u
 #define SURF_BRIGHT 0x20u

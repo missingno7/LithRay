@@ -18,9 +18,13 @@ struct GInstance {
 struct GSurface { uint32_t tex, flags, pad0, pad1; };
 struct GLight { float posRadius[4]; float color[4]; };
 struct GTexInfo { uint32_t flags; float gloss; };
+struct GLamp { float posRadius[4]; float color[4]; float spot[4]; };
+struct GLampGrid { float origin[4]; int32_t dims[3]; uint32_t count; };
 struct GFrame {
     M4 viewProj[3]; M4 prevViewProj[3];
     float camPos[4], fogColor[4], fogParams[4], lightScale[4], modelLightDir[4], rt[4], misc[4], skyColor[4], viewport[4];
+    float ambient[4];           // rgb: the level's lightmap ambient (minimum texel), a: lamp shadows enabled
+    GLampGrid lampGrid;
     uint32_t nLights, pad[3];
 };
 static_assert(sizeof(GVertex) == 48 && sizeof(GInstance) == 160, "gpu layout");
@@ -28,7 +32,7 @@ static_assert(sizeof(GVertex) == 48 && sizeof(GInstance) == 160, "gpu layout");
 enum : uint32_t { I_WORLD = 1, I_CONTAINER = 2, I_MODEL = 4, I_UNLIT = 8, I_ALPHATEST = 0x10, I_NOTEXTURE = 0x20, I_CHROME = 0x40,
                   I_WATER = 0x80, I_SKY = 0x100, I_CLOSE = 0x200 };
 enum : uint32_t { T_FULLBRIGHT = 1, T_ALPHA = 2 };
-constexpr uint32_t kMaxTextures = 4096, kTexLightmap = 4095;
+constexpr uint32_t kMaxTextures = 4096, kTexLightmap = 4095, kMaxLamps = 2048;
 
 enum Pipe { P_OPAQUE, P_SKYMASK, P_BLEND, P_ADD, P_NOZ, P_BLEND_ZWRITE, P_COUNT };
 // d3d.ren's fixed queue order (d3d_FlushObjectQueues); no depth sorting inside a group.
@@ -83,7 +87,7 @@ private:
     void addWorldDraws(const lr::SceneCmd &sc);
     void addObject(const lr::SceneCmd &sc, const lr::ObjectRecord &o);
     void addModel(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const uint8_t *payload);
-    void addSprite(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const lr::SpritePayload &p);
+    void addSprite(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const uint8_t *payload);
     void addParticles(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const uint8_t *payload);
     void addPolyGrid(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const uint8_t *payload);
     void addLines(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const uint8_t *payload);
@@ -95,6 +99,8 @@ private:
     void buildAccel(VkCommandBuffer cmd);
     void writeTextureSlot(uint32_t slot, VkImageView view);
     void saveScreenshot();
+    void loadLamps(const char *worldFile, const char *rezSources);
+    void logOnce(uint32_t key, const char *fmt, ...);
     bool ensureWindow();
 
     // device objects
@@ -113,6 +119,7 @@ private:
     Image sceneColor, sceneAux, sceneDepth, history[2], overlayImg, white;
     Image textures[kMaxTextures];
     std::vector<GTexInfo> texInfoCpu;
+    Buffer lampBuf, lampDataBuf;
     Buffer vbuf, ibuf, instBuf, triBuf, surfBuf, lightBuf, texInfoBuf, frameBuf, tlasInstBuf, scratch, shotBuf;
     Accel tlas, dynBlas;
 
@@ -126,6 +133,9 @@ private:
     lr::LightGrid grid = {};
     std::vector<uint8_t> gridData;
     std::string worldName;
+    std::vector<GLamp> lamps; std::vector<uint32_t> lampCells, lampIndices; GLampGrid lampGrid = {};
+    float levelAmbient[3] = {};
+    std::unordered_map<uint32_t, int> loggedKeys;
 
     std::unordered_map<uint32_t, ModelDef> models;
     std::unordered_map<uint32_t, History> historyMap;

@@ -11,7 +11,7 @@
 namespace lr {
 
 constexpr uint32_t kMagic = 0x5941524c;      // 'LRAY'
-constexpr uint32_t kVersion = 4;
+constexpr uint32_t kVersion = 6;
 constexpr uint32_t kHeaderSize = 4096;
 constexpr uint32_t kArenaSize = 64u << 20;
 
@@ -87,6 +87,8 @@ struct WorldBeginCmd {
     LightGrid grid;
     char     worldName[100];
     uint32_t pad;
+    char     worldFile[128];        // the level file the server loaded ("Worlds\x.dat"), "" when unknown
+    char     rezSources[512];       // the game's -rez sources in command-line order, ';' separated (later overrides earlier)
     // then: WorldBsp[nBsps], WorldSurface[nSurfaces], WorldPoly[nPolys], WorldVertex[nVertices],
     //       uint8 lightmaps[lightmapBytes] (padded to 8), uint8 grid[nSamples*4]
 };
@@ -138,7 +140,8 @@ struct ModelPayload {
     uint32_t pad;
 };
 struct WorldModelPayload { uint32_t bsp; uint32_t pad; float transform[16]; };  // row-major local -> world
-struct SpritePayload { uint32_t tex; uint32_t clipPoly; };
+// nClip > 0: the sprite is a decal clipped to a world polygon; then Vec3 planeNormal, float planeDist, Vec3[nClip] (world space)
+struct SpritePayload { uint32_t tex; uint32_t nClip; };
 struct ParticlePayload { uint32_t tex, count; float particleRadius; uint32_t psFlags; };   // then {Vec3 pos; uint8 rgba[4]}[count], pos system-local
 struct Particle { Vec3 pos; uint8_t rgba[4]; };
 struct PolyGridPayload {

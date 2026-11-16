@@ -55,7 +55,7 @@ $gfxObj = "$out\x64\gfx.obj"
 if (-not (Test-Path $gfxObj) -or (Get-Item $gfxObj).LastWriteTime -lt (Get-Item "$root\host\gfx.cpp").LastWriteTime -or (Get-Item $gfxObj).LastWriteTime -lt (Get-Item "$root\host\gfx.h").LastWriteTime) {
     Invoke-Cl "x64" "cl $common $inc /c /Fo`"$gfxObj`" /Fd`"$out\x64\host.pdb`" `"$root\host\gfx.cpp`""
 }
-Invoke-Cl "x64" "cl $common $inc /Fo`"$out\x64\\`" /Fd`"$out\x64\host.pdb`" `"$root\host\main.cpp`" `"$root\host\renderer.cpp`" `"$root\host\effects.cpp`" `"$gfxObj`" /Fe`"$out\lithray_host.exe`" /link /DEBUG /PDB:`"$out\lithray_host.pdb`" /SUBSYSTEM:CONSOLE user32.lib"
+Invoke-Cl "x64" "cl $common $inc /Fo`"$out\x64\\`" /Fd`"$out\x64\host.pdb`" `"$root\host\main.cpp`" `"$root\host\renderer.cpp`" `"$root\host\effects.cpp`" `"$root\host\lamps.cpp`" `"$gfxObj`" /Fe`"$out\lithray_host.exe`" /link /DEBUG /PDB:`"$out\lithray_host.pdb`" /SUBSYSTEM:CONSOLE user32.lib"
 
 Write-Host "built $out\lithray.ren and $out\lithray_host.exe"
 if ($GameDir) {

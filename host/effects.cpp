@@ -26,7 +26,9 @@ static GInstance unlitInstance(uint32_t tex, uint32_t firstIndex, uint32_t flags
     return gi;
 }
 
-void Renderer::addSprite(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const lr::SpritePayload &sp) {
+void Renderer::addSprite(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const uint8_t *payload) {
+    const lr::SpritePayload &sp = *(const lr::SpritePayload *)payload;
+    if (sp.nClip == 0xffffffffu) return;
     if (settings.drawSprites == 0 || sp.tex == 0 || sp.tex >= kTexLightmap || !textures[sp.tex].img) return;
     float w = (float)textures[sp.tex].width, h = (float)textures[sp.tex].height;
     bool sky = (o.role & lr::OBJ_SKY) != 0, noZ = (o.flags & lr::FLAG_SPRITE_NOZ) != 0;
@@ -40,6 +42,48 @@ void Renderer::addSprite(const lr::SceneCmd &sc, const lr::ObjectRecord &o, cons
     }
     uint32_t color = packColor(col[0] / 255, col[1] / 255, col[2] / 255, o.rgba[3] / 255.0f);
 
+    logOnce(o.key, "sprite obj %08x tex %u %gx%g scale %.2f,%.2f flags %08x role %u rgba %u,%u,%u,%u pos %.0f,%.0f,%.0f%s", o.key, sp.tex, w, h, o.scale.x, o.scale.y,
+            o.flags, o.role, o.rgba[0], o.rgba[1], o.rgba[2], o.rgba[3], o.pos.x, o.pos.y, o.pos.z, (o.flags & lr::FLAG_ROTATEABLESPRITE) ? " rotatable" : "");
+    if (sp.nClip && (o.flags & lr::FLAG_ROTATEABLESPRITE)) {
+        // decal: the texture-sized quad clipped against the planes through each edge of its world polygon
+        const float *pl = (const float *)(payload + sizeof(lr::SpritePayload));
+        const lr::Vec3 *pv = (const lr::Vec3 *)(pl + 4);
+        V3 normal{pl[0], pl[1], pl[2]};
+        if (dot(normal, eye) - pl[3] <= 0.01f) return;      // seen from behind
+        struct CV { V3 p; float u, t; };
+        std::vector<CV> a, b;
+        M4 m = setupTransform(o, V3{o.scale.x, o.scale.y, o.scale.z});
+        a = {{m.point(V3{w, h, 0}), 0.5f, 0.5f}, {m.point(V3{-w, h, 0}), w - 0.5f, 0.5f}, {m.point(V3{-w, -h, 0}), w - 0.5f, h - 0.5f}, {m.point(V3{w, -h, 0}), 0.5f, h - 0.5f}};
+        for (uint32_t i = 0; i < sp.nClip && !a.empty(); i++) {
+            V3 prev{pv[i ? i - 1 : sp.nClip - 1].x, pv[i ? i - 1 : sp.nClip - 1].y, pv[i ? i - 1 : sp.nClip - 1].z}, cur{pv[i].x, pv[i].y, pv[i].z};
+            V3 plane = cross(cur - prev, normal);
+            float len = length(plane);
+            if (len < 1e-6f) continue;
+            plane = plane * (1.0f / len);
+            float pd = dot(plane, cur);
+            b.clear();
+            for (size_t j = 0; j < a.size(); j++) {
+                const CV &p0 = a[j ? j - 1 : a.size() - 1], &p1 = a[j];
+                float d0 = dot(plane, p0.p) - pd, d1 = dot(plane, p1.p) - pd;
+                if (d0 > 0) b.push_back(p0);
+                if ((d0 > 0) != (d1 > 0)) {
+                    float t = -d0 / (d1 - d0);
+                    b.push_back(CV{p0.p + (p1.p - p0.p) * t, p0.u + (p1.u - p0.u) * t, p0.t + (p1.t - p0.t) * t});
+                }
+            }
+            a.swap(b);
+        }
+        if (a.size() < 3) return;
+        uint32_t cfv, cfi, nv = (uint32_t)a.size();
+        GVertex *cvx = allocDyn(nv, cfv);
+        uint32_t *cix = cvx ? allocDynIndices((nv - 2) * 3, cfi) : nullptr;
+        if (!cix) return;
+        for (uint32_t i = 0; i < nv; i++) setVertex(cvx[i], a[i].p, color, a[i].u, a[i].t, normal);
+        for (uint32_t i = 0; i + 2 < nv; i++) { cix[i * 3] = cfv; cix[i * 3 + 1] = cfv + i + 1; cix[i * 3 + 2] = cfv + i + 2; }
+        uint32_t cinst = pushInstance(unlitInstance(sp.tex, cfi, sky ? I_SKY : 0));
+        pushDraw(sky ? G_SKY : noZ ? G_SPRITES_NOZ : G_SPRITES, (sky || noZ) ? P_NOZ : P_BLEND, cinst, cfi, (nv - 2) * 3, sky ? 1 : 0);
+        return;
+    }
     uint32_t fv, fi;
     GVertex *v = allocDyn(4, fv);
     uint32_t *idx = v ? allocDynIndices(6, fi) : nullptr;
@@ -79,6 +123,7 @@ void Renderer::addParticles(const lr::SceneCmd &sc, const lr::ObjectRecord &o, c
     if (settings.drawParticles == 0) return;
     const lr::ParticlePayload &pp = *(const lr::ParticlePayload *)payload;
     const lr::Particle *parts = (const lr::Particle *)(payload + sizeof(lr::ParticlePayload));
+    logOnce(o.key, "particles obj %08x count %u radius %.1f tex %u flags %08x pos %.0f,%.0f,%.0f", o.key, pp.count, pp.particleRadius, pp.tex, o.flags, o.pos.x, o.pos.y, o.pos.z);
     if (!pp.count) return;
     uint32_t tex = pp.tex < kTexLightmap && textures[pp.tex].img ? pp.tex : 0;
     float w = tex ? (float)textures[tex].width : 1, h = tex ? (float)textures[tex].height : 1;
@@ -137,6 +182,8 @@ void Renderer::addPolyGrid(const lr::SceneCmd &sc, const lr::ObjectRecord &o, co
     float vScale = (pg.yScale != 0 ? 1.0f / pg.yScale : 0) * o.scale.z * (H / (H - 1.0f));
     (void)tw; (void)th;
 
+    logOnce(o.key, "polygrid obj %08x %ux%u tex %u env %u scale %.1f,%.1f,%.1f flags %08x role %u alpha %u pos %.0f,%.0f,%.0f", o.key, W, H, pg.tex, pg.envTex,
+            o.scale.x, o.scale.y, o.scale.z, o.flags, o.role, o.rgba[3], o.pos.x, o.pos.y, o.pos.z);
     uint32_t nIdx = pg.nIndices - pg.nIndices % 3;
     uint32_t fv, fi;
     GVertex *v = allocDyn(W * H, fv);

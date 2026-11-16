@@ -7,6 +7,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <vector>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -34,6 +35,43 @@ static uint32_t g_contextId, g_nSurfaces, g_nPolys, g_nVertices;
 static std::unordered_map<uint32_t, uint32_t> g_bspByWorldData;   // WorldData* -> bsp index
 
 static Vec3 V(const LT1Vector &v) { return Vec3{v.x, v.y, v.z}; }
+
+// The world file the single-player server loaded: g_pServerMgr (CLIENT.EXE 2.1 RVA 0x91728) +0x1a4 m_pWorldFile, a
+// UsedFile whose first field is a hash element keyed by the file name (length at +0x14, characters at +0x16).
+// Only the world FILE still has the level's static lights; the engine never creates them (CF_NORUNTIME).
+static void LoadedWorldFile(char *out, size_t size) {
+    out[0] = 0;
+    __try {
+        uint8_t *exe = (uint8_t *)GetModuleHandleA(nullptr);
+        uint8_t *server = *(uint8_t **)(exe + 0x91728);
+        if (!server || IsBadReadPtr(server + 0x1a4, 4)) return;
+        uint8_t *used = *(uint8_t **)(server + 0x1a4);
+        if (!used || IsBadReadPtr(used, 4)) return;
+        uint8_t *element = *(uint8_t **)used;
+        if (!element || IsBadReadPtr(element + 0x14, 2)) return;
+        uint16_t len = *(uint16_t *)(element + 0x14);
+        if (!len || len > 260 || IsBadReadPtr(element + 0x16, len)) return;
+        size_t n = 0;
+        for (; n < len && n + 1 < size && element[0x16 + n]; n++) out[n] = (char)element[0x16 + n];
+        out[n] = 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { out[0] = 0; }
+}
+
+static void RezSources(char *out, size_t size) {
+    out[0] = 0;
+    const char *cl = GetCommandLineA();
+    std::vector<std::string> tokens; std::string cur; bool quoted = false, any = false;
+    for (const char *c = cl; *c; c++) {
+        if (*c == '"') { quoted = !quoted; any = true; }
+        else if ((*c == ' ' || *c == '	') && !quoted) { if (any) tokens.push_back(cur); cur.clear(); any = false; }
+        else { cur += *c; any = true; }
+    }
+    if (any) tokens.push_back(cur);
+    std::string joined;
+    for (size_t i = 0; i + 1 < tokens.size(); i++)
+        if (!_stricmp(tokens[i].c_str(), "-rez")) { if (!joined.empty()) joined += ';'; joined += tokens[i + 1]; }
+    strncpy(out, joined.c_str(), size - 1); out[size - 1] = 0;
+}
 
 static void SendWorld(LT1MainWorld *world) {
     g_bsps.clear(); g_bspByWorldData.clear(); g_uvCache.clear();
@@ -109,12 +147,14 @@ static void SendWorld(LT1MainWorld *world) {
     memcpy(c->grid.dims, lt.m_Dims, sizeof(c->grid.dims));
     c->grid.blockSize = V(lt.m_BlockSize); c->grid.lookupStart = V(lt.m_LookupStart); c->grid.nSamples = nSamples;
     strncpy(c->worldName, world->m_pWorldBsp->m_WorldName, sizeof(c->worldName) - 1);
+    LoadedWorldFile(c->worldFile, sizeof(c->worldFile));
+    RezSources(c->rezSources, sizeof(c->rezSources));
     uint8_t *p = (uint8_t *)(c + 1);
     auto copy = [&](Out &o) { memcpy(p, o.d.data(), o.size()); p += o.size(); };
     copy(bspsOut); copy(surfOut); copy(polyOut); copy(vertOut); copy(lmOut);
     if (nSamples) memcpy(p, lt.m_pData, nSamples * 4);
-    bridge::Log("world '%s': %u bsps, %u surfaces, %u polys, %u vertices, %u lightmap bytes, grid %dx%dx%d",
-                c->worldName, c->nBsps, g_nSurfaces, g_nPolys, g_nVertices, c->lightmapBytes, lt.m_Dims[0], lt.m_Dims[1], lt.m_Dims[2]);
+    bridge::Log("world '%s' (%s): %u bsps, %u surfaces, %u polys, %u vertices, %u lightmap bytes, grid %dx%dx%d",
+                c->worldName, c->worldFile, c->nBsps, g_nSurfaces, g_nPolys, g_nVertices, c->lightmapBytes, lt.m_Dims[0], lt.m_Dims[1], lt.m_Dims[2]);
 }
 
 // ------------------------------------------------------------------ models
@@ -361,7 +401,22 @@ static void EmitObject(LT1DObject *o, uint8_t role) {
         uint32_t id = TexId(tex);
         if (!id) break;
         uint32_t at = BeginRecord(o, role);
-        g_obj.put(lr::SpritePayload{id, s->m_ClipperPoly});
+        uint32_t pAt = g_obj.put(lr::SpritePayload{id, 0});
+        // Decals: d3d.ren clips rotatable sprites to the world polygon named by the handle (high word: world model
+        // index, 0xffff = main world; low word: node index). Resolved here, where the BSP is readable.
+        uint32_t h = s->m_ClipperPoly;
+        if ((o->m_Flags & lr::FLAG_ROTATEABLESPRITE) && h != 0xffffffffu && h != 0 && g_world) {
+            LT1WorldBsp *bsp = nullptr;
+            if ((h >> 16) == 0xffff) bsp = g_world->m_pWorldBsp;
+            else if ((h >> 16) < g_world->m_nWorldModels && g_world->m_WorldModels[h >> 16]) bsp = g_world->m_WorldModels[h >> 16]->m_pWorldBsp;
+            LT1WorldPoly *poly = (bsp && bsp->m_Nodes && (h & 0xffff) < bsp->m_nNodes) ? bsp->m_Nodes[h & 0xffff].m_pPoly : nullptr;
+            if (poly && poly->m_pSurface && poly->m_pSurface->m_pPlane && poly->m_nVertices >= 3 && poly->m_nVertices < 64) {
+                g_obj.put(*poly->m_pSurface->m_pPlane);
+                for (uint32_t v = 0; v < poly->m_nVertices; v++) g_obj.put(*poly->m_Vertices[v].m_pPoint);
+                g_obj.at<lr::SpritePayload>(pAt)->nClip = poly->m_nVertices;
+            } else
+                g_obj.at<lr::SpritePayload>(pAt)->nClip = 0xffffffffu;      // unresolved handle: d3d.ren draws nothing
+        }
         EndRecord(at);
         break;
     }

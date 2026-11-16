@@ -50,7 +50,7 @@ void main() {
                 ao = mix(ao, h.r, 0.88 * ok);
             }
             if (depth >= 1.0) ao = 1.0;
-            color *= mix(1.0, ao, 0.85);
+            color *= mix(1.0, ao, 0.7);
         }
         color += pc.lightAdd.rgb;
         color *= pc.params2.x;
