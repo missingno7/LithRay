@@ -74,7 +74,7 @@ void main() {
     // areas from flattening out while leaving shadows and dim areas linear.
     float l = dot(light, vec3(0.299, 0.587, 0.114));
     if (l > 0.5) light *= (0.5 + (l - 0.5) / (1.0 + (l - 0.5) * 1.1)) / l;
-    vec3 color = albedo.rgb * light;
+    vec3 color = albedo.rgb * mix(light, vec3(1.0), albedo.a);     // albedo.a: the texture's fullbright (emissive) layer
     if (pc.fogColor.a > 0.5) {
         vec2 ndc = ((vUv - pc.viewport.xy) / pc.viewport.zw) * 2.0 - 1.0;
         float dist = lin * length(vec3(ndc.x * pc.params.z, ndc.y * pc.params.w, 1.0));

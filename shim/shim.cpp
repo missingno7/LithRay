@@ -121,7 +121,7 @@ static const char *kOptions[][2] = {
     {"lr_RT", "1"},            // ray-traced lighting (0 = raster baseline)
     {"lr_RTShadows", "1"}, {"lr_RTReflections", "1"}, {"lr_RTAO", "1"},
     {"lr_RTGI", "1"},          // 1: lamps + one indirect bounce replace the lightmaps; 0: lightmaps with ray-traced shadows
-    {"lr_GIDirect", "0.7"}, {"lr_GIIndirect", "1"}, {"lr_GIHistory", "0.9"},
+    {"lr_GIDirect", "1"}, {"lr_GIIndirect", "1.3"}, {"lr_GIHistory", "0.9"}, {"lr_GIEmissive", "1"},
     {"lr_VSync", "1"}, {"lr_MaxFPS", "0"}, {"lr_DebugView", "0"}, {"lr_Exposure", "1"}, {"lr_Widescreen", "1"},
     {"lr_GameSpeedFix", "1"}, {"lr_MouseFix", "1"},
 };

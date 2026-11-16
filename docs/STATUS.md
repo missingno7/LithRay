@@ -1,6 +1,6 @@
 # Status
 
-Last updated 2026-11-16 (first session). "Verified" means seen working in the real game on this machine
+Last updated 2026-11-16 (first session, with the user playing the game during the second half). "Verified" means seen working in the real game on this machine
 (RTX 4090, Blood II 2.1 in `D:\Prog\blood2_test`); everything else is labelled.
 
 ## Verified in the running game
@@ -15,6 +15,14 @@ Last updated 2026-11-16 (first session). "Verified" means seen working in the re
   (371 lamps read from `Worlds\01_SubwayA.dat`), ambient occlusion with temporal accumulation. About 2.3 ms GPU at
   1280×720; uncapped at 1920×1000 the game runs at roughly 370-730 fps with ray tracing on.
 * `lr_RT 0` raster baseline of the same scene.
+* **Full ray-traced lighting** (`lr_RTGI 1`): lamps with shadow rays + one bounce + emitters, resolved with spatial and
+  temporal filtering; brightness matched by eye against the lightmap mode in the train carriage. 240 fps at 1280x720
+  (about 1.5 ms GPU); at 3840x2160 about 5.5-6 ms GPU, 145-165 fps.
+* Borderless fullscreen at 3840x2160, played interactively by the user in `01_SubwayA` and the following city level.
+* **Alt+Tab**: the engine unloads the renderer, the host survives and the next `Init` reconnects (seen three times
+  in one session, no errors).
+* Sky and moon after the sky rewrite (the user: "about right", not verified pixel-exact against d3d.ren).
+* Masked walls (fence): two-sided, alpha-tested shadows (the user: "looks right").
 
 ## Bugs found by running the game (and their real causes)
 
@@ -30,12 +38,21 @@ Last updated 2026-11-16 (first session). "Verified" means seen working in the re
 * 100 fps cap never lifted: a missing `server.dll` was treated as a failed game-speed patch. Single player runs the
   server inside `CLIENT.EXE`; a module that is not loaded is fine, as in d_ren.
 
+* Sky flat fog colour: the sky was fogged by its distance from the player camera instead of the sky camera.
+* Sky looked wrong / the moon was an opaque box: the sky is a painter's pass with front faces only, and in blended
+  passes texture alpha is opacity (also for the fullbright alpha bit). Both from `port_notes/sky.md` and E.1.13.
+* Masked walls one-sided and unlit: translucent world models are two-sided, pre-lit by vertex colours, no lightmap.
+* View pistol with see-through parts: d3d.ren never alpha-tests; a solid model ignores its skin's alpha mask.
+* Full ray-traced mode dimmer than the original: the bake has no cosine term; and "bright" things are not tagged
+  polygons in this level (no surface has flag 0x20) but fullbright texels and ordinary lightmapped world models.
+
 ## Implemented but not yet verified in game
 
-* Alt+Tab / mode switch (the host is designed to survive the DLL unload and be reconnected; never exercised).
-* Borderless fullscreen (`-Interactive` without `-Windowed`); resolutions other than 1280×720.
-* Sky objects and the sky camera, particle systems, polygrids (water) and their reflections, line systems,
-  glow/bias/no-Z sprites, fog: the first level shows none of them clearly.
+* Mode switch from the options menu.
+* Polygrids (water) and their reflections, particle systems, line systems, glow/bias/no-Z sprites, fog.
+* Chrome models reflecting by `1 - alpha` and the removal of the model alpha test (the view pistol showed see-through
+  parts before it): built and deployed, not yet confirmed by the user.
+* Emitters lighting their surroundings in levels other than the train.
 * Reflections in general (the keyword table needs a level with matching textures to judge).
 * Texture UV animation updates (surface effects), vertex-animated models beyond what the first level uses.
 * F8 screenshots (BMP path), host loss handling, arena overflow flushes.
@@ -59,11 +76,14 @@ Last updated 2026-11-16 (first session). "Verified" means seen working in the re
 
 2. `+runworld` with the install's custom rez arguments stays in the menu (TESTING.md).
 3. "Disconnected from the server" message at every `+runworld` start: cause unknown, harmless so far.
-4. Transparent / alpha-tested geometry is opaque to rays (grates and fences would cast solid shadows) and
-   translucent world models are not in the TLAS.
+4. Plain translucent world models (glass) are not in the TLAS; translucent surfaces are lit the classic way and are
+   not part of the denoised lighting.
 5. `GlobalDirLight` (sun) lamps are parsed but ignored; spot-lamp direction from the Euler rotation is unverified
    (no visible spot shadow has been checked against the bake).
-6. Lamp shadows are hard (one ray to the lamp centre). Soft shadows need a denoised visibility buffer.
+6. The full ray-traced mode accumulates over about ten frames: fast-moving shadows and lights lag, and there is no
+   history-length tracking or variance guidance. Reflections are folded into the light buffer and get blurred with it.
+   In blended passes a plain (non-fullbright, non-masked) texture is treated as opaque alpha; the 1555 format rule
+   would make only palette entries 246..255 opaque there -- unresolved, see E.1.3 / E.1.5 of the reconstruction.
 7. AO is applied in the resolve pass to the whole pixel, including translucent surfaces drawn over it.
 8. Object identity is the engine object address. Slots are reused, so history can mis-associate for one frame.
 9. The dynamic geometry budget is fixed (500k vertices / 1.5M indices per frame); overflow drops objects silently.
@@ -71,9 +91,11 @@ Last updated 2026-11-16 (first session). "Verified" means seen working in the re
 
 ## Next steps (suggested order)
 
+0. Tune and verify the full ray-traced mode on more levels (outdoors, water, dark areas); half-resolution lighting
+   for 4K.
 1. Parity harness: same camera, d3d.ren (dgVoodoo2) vs d_ren vs LithRay raster, diffed (TESTING.md step 4).
 2. Exercise the unverified list on an outdoor level with water (sky, polygrids, particles, fog), then Alt+Tab.
-3. Any-hit handling for alpha-tested surfaces in ray queries; translucent world models in the TLAS with a mask.
-4. Soft lamp shadows + a proper denoiser (the motion vectors and history plumbing exist).
+3. Glass in the TLAS (tinted transmission); ray-traced lighting for translucent surfaces.
+4. A proper denoiser (history length, variance, separate specular buffer).
 5. Classic-mode completeness: chrome pass, model tint, cloud shadows, LOD.
 6. Verify fullscreen and 4K performance.

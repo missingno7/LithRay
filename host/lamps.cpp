@@ -99,9 +99,7 @@ bool readGameFile(const std::string &name, const std::string &rezSources, std::v
 } // namespace
 
 void Renderer::loadLamps(const char *worldFile, const char *rezSources) {
-    lamps.clear();
-    lampCells.clear(); lampIndices.clear();
-    memset(&lampGrid, 0, sizeof(lampGrid));
+    lamps.clear(); fileLampCount = 0;
     if (!worldFile[0]) { Log("lamps: the world file name is unknown (no static lamp shadows)"); return; }
     std::vector<uint8_t> file;
     if (!readGameFile(worldFile, rezSources, file) || file.size() < 8) { Log("lamps: cannot read %s from [%s]", worldFile, rezSources); return; }
@@ -160,6 +158,13 @@ void Renderer::loadLamps(const char *worldFile, const char *rezSources) {
         if (radius > 1 && lamps.size() < kMaxLamps) lamps.push_back(l);
     }
 
+    fileLampCount = lamps.size();
+    Log("lamps: %u point, %u spot, %u object-only, %u directional (ignored) from %s", nPoint, nSpot, nObject, nDir, worldFile);
+}
+
+void Renderer::buildLampGrid() {
+    lampCells.clear(); lampIndices.clear();
+    memset(&lampGrid, 0, sizeof(lampGrid));
     // ---- uniform grid over the lamps' reach, so a pixel only walks the lamps that can touch it
     if (!lamps.empty()) {
         V3 mn{1e30f, 1e30f, 1e30f}, mx{-1e30f, -1e30f, -1e30f};
@@ -193,6 +198,53 @@ void Renderer::loadLamps(const char *worldFile, const char *rezSources) {
         lampCells[cells.size()] = (uint32_t)lampIndices.size();
         lampGrid.count = (uint32_t)lamps.size();
     }
-    Log("lamps: %u point, %u spot, %u object-only, %u directional (ignored) from %s; grid %dx%dx%d, %zu cell entries", nPoint, nSpot, nObject, nDir,
-        worldFile, lampGrid.dims[0], lampGrid.dims[1], lampGrid.dims[2], lampIndices.size());
+    if (lamps.empty()) return;
+    memcpy(lampBuf.mapped, lamps.data(), lamps.size() * sizeof(GLamp));
+    uint32_t base = (uint32_t)lampCells.size();
+    uint32_t *ld = (uint32_t *)lampDataBuf.mapped;
+    if (lampCells.size() + lampIndices.size() <= lampDataBuf.size / 4) {
+        for (size_t i = 0; i < lampCells.size(); i++) ld[i] = lampCells[i] + base;
+        memcpy(ld + base, lampIndices.data(), lampIndices.size() * 4);
+    } else { Log("lamp grid too large: lamps off"); lampGrid.count = 0; }
+    Log("lamp grid: %zu lamps (%zu from the level file, %zu emitters), %dx%dx%d cells, %zu entries", lamps.size(), fileLampCount,
+        lamps.size() - fileLampCount, lampGrid.dims[0], lampGrid.dims[1], lampGrid.dims[2], lampIndices.size());
+}
+
+// Surfaces the level marks as bright -- the editor's "bright" surface tag, which the preprocessor resolves into a fully
+// saturated lightmap, and fullbright texels (palette entries 246..255 of DTX_FULLBRITE textures) -- are self-lit in the
+// original but light nothing. Here each one becomes a light: a cosine-lobed lamp in front of the polygon, coloured by
+// what the texture shows, sized by the polygon. They then go through the same shadow-ray and bounce code as the lamps.
+void Renderer::buildEmitters() {
+    lamps.resize(fileLampCount);
+    float strength = settings.giEmissive > 0 ? settings.giEmissive : 0.0f;
+    struct Cand { float weight; GLamp lamp; };
+    std::vector<Cand> cands;
+    for (const EmitPoly &e : emitPolys) {
+        uint32_t tex = e.surface < surfaces.size() ? surfaces[e.surface].tex : 0;
+        if (!tex || tex >= texStats.size()) continue;
+        const TexStats &ts = texStats[tex];
+        float col[3];
+        if (e.bright) for (int i = 0; i < 3; i++) col[i] = ts.avg[i];
+        else if (ts.fbCoverage > 0.02f) for (int i = 0; i < 3; i++) col[i] = ts.fbAvg[i] * std::min(ts.fbCoverage * 3.0f, 1.0f);
+        else continue;
+        float lum = col[0] * 0.299f + col[1] * 0.587f + col[2] * 0.114f;
+        if (lum < 0.06f || e.area < 48.0f) continue;
+        GLamp l = {};
+        V3 p = e.center + e.normal * 4.0f;
+        float size = sqrtf(e.area);
+        l.posRadius[0] = p.x; l.posRadius[1] = p.y; l.posRadius[2] = p.z;
+        l.posRadius[3] = std::clamp(size * 5.0f, 140.0f, 640.0f);
+        float gain = strength * std::clamp(size / 48.0f, 0.5f, 1.6f);
+        for (int i = 0; i < 3; i++) l.color[i] = col[i] * gain;
+        l.color[3] = 3.0f;                              // lights the world and models
+        l.spot[0] = e.normal.x; l.spot[1] = e.normal.y; l.spot[2] = e.normal.z;       // lampAt: cone axis = direction the lamp shines in
+        l.spot[3] = 0.0f;                               // cosine lobe over the front hemisphere
+        cands.push_back(Cand{lum * e.area, l});
+    }
+    std::sort(cands.begin(), cands.end(), [](const Cand &a, const Cand &b) { return a.weight > b.weight; });
+    size_t room = kMaxLamps > lamps.size() ? kMaxLamps - lamps.size() : 0;
+    for (size_t i = 0; i < cands.size() && i < room && i < 900; i++) lamps.push_back(cands[i].lamp);
+    emittersBuilt = true; emittersStrength = settings.giEmissive;
+    Log("emitters: %zu candidates from %zu polygons, %zu used", cands.size(), emitPolys.size(), lamps.size() - fileLampCount);
+    buildLampGrid();
 }

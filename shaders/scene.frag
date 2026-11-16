@@ -64,7 +64,7 @@ float traceMasked(vec3 origin, vec3 dir, float tmax, uint mask) {
         vec2 bc = rayQueryGetIntersectionBarycentricsEXT(rq, false);
         vec2 uv = vertices[indices[C.firstIndex + prim * 3u]].uv * (1.0 - bc.x - bc.y) + vertices[indices[C.firstIndex + prim * 3u + 1u]].uv * bc.x +
                   vertices[indices[C.firstIndex + prim * 3u + 2u]].uv * bc.y;
-        uint tex = surfaces[triTable[C.triBase + prim]].tex;
+        uint tex = triSurface(C.triBase, prim).tex;
         float a = C.color.a;
         if ((texInfo[tex].flags & T_ALPHA) != 0u) a *= sampleTexLod(tex, uv, 0.0).a;
         if (a >= 0.5) rayQueryConfirmIntersectionEXT(rq);
@@ -191,7 +191,11 @@ vec3 lampDirect(vec3 p, vec3 n, vec3 origin, uint wantFlags, int maxRays) {
         vec3 to; float d;
         vec3 c = lampAt(l, p, to, d);
         float ndl = dot(n, to) / max(d, 0.001);
-        if (ndl <= 0.0 || luma(c) * ndl < 0.01) continue;
+        if (ndl <= 0.0) continue;
+        // The level was lit for a bake WITHOUT a cosine term (a lamp lights every surface facing it equally). Pure
+        // Lambert makes walls much darker than the designers saw; half-way keeps their balance and still reads as form.
+        ndl = 0.5 + 0.5 * ndl;
+        if (luma(c) * ndl < 0.01) continue;
         float vis = 1.0;
         if (rays < maxRays) {
             vec3 target = to + rndSphere() * frame.gi.w;
@@ -226,7 +230,7 @@ vec3 bounceRadiance(vec3 origin, vec3 dir) {
     vec3 hp = origin + dir * t;
     uint tex; vec3 base = vec3(0.0); bool bright = false;
     if ((C.flags & I_WORLD) != 0u) {
-        Surface s = surfaces[triTable[C.triBase + prim]];
+        Surface s = triSurface(C.triBase, prim);
         tex = s.tex; bright = (s.flags & SURF_BRIGHT) != 0u;
     } else {
         Instance M = C;
@@ -244,7 +248,7 @@ vec3 bounceRadiance(vec3 origin, vec3 dir) {
         vec3 c = lampAt(l, hp, to, d);
         float ndl = dot(hn, to) / max(d, 0.001);
         if (ndl > 0.0 && luma(c) > 0.01)
-            irr += min(c * ndl * float(count), vec3(3.0)) * traceMasked(hp + hn * 0.75, to / d, max(d - 2.0, 0.0), 0x07u) * frame.gi.z;
+            irr += min(c * (0.5 + 0.5 * ndl) * float(count), vec3(3.0)) * traceMasked(hp + hn * 0.75, to / d, max(d - 2.0, 0.0), 0x07u) * frame.gi.z;
     }
     return tx.rgb * mix(irr * frame.lightScale.rgb * frame.lightScale.a, vec3(1.5), emissive);
 }
@@ -280,13 +284,14 @@ vec3 shadeHit(rayQueryEXT rq, vec3 origin, vec3 dir) {
             for (uint k = lb; k < le && k < lb + 16u; k++) {
                 vec3 to; float d;
                 vec3 c = lampAt(lamps[lampData[k]], hp, to, d);
-                hitLamps += c * max(dot(hn, to) / max(d, 0.001), 0.0) * frame.gi.z;
+                float hndl = dot(hn, to) / max(d, 0.001);
+                if (hndl > 0.0) hitLamps += c * (0.5 + 0.5 * hndl) * frame.gi.z;
             }
         float hl = luma(hitLamps);
         if (hl > 0.5) hitLamps *= (0.5 + (hl - 0.5) / (1.0 + (hl - 0.5) * 1.1)) / hl;
     }
     if ((C.flags & I_WORLD) != 0u) {
-        Surface s = surfaces[triTable[C.triBase + prim]];
+        Surface s = triSurface(C.triBase, prim);
         vec4 tx = sampleTexLod(s.tex, uv, lod);
         vec3 light = (s.flags & SURF_BRIGHT) != 0u ? vec3(1.0) : (lampLit && (C.flags & I_PRELIT) == 0u) ? hitLamps
                    : ((s.flags & SURF_LIGHTMAP) != 0u ? textureLod(textures[TEX_LIGHTMAP], lm, 0.0).rgb : vc.rgb);
@@ -324,7 +329,7 @@ void main() {
     uint tex = I.tex, sflags = 0u;
     bool world = (I.flags & I_WORLD) != 0u;
     if (world) {
-        Surface s = surfaces[triTable[I.triBase + uint(gl_PrimitiveID)]];
+        Surface s = triSurface(I.triBase, uint(gl_PrimitiveID));
         tex = s.tex; sflags = s.flags;
     }
     vec4 tx = (I.flags & I_NOTEXTURE) != 0u ? vec4(1.0) : sampleTex(tex, vUv);
@@ -363,8 +368,8 @@ void main() {
     float bakedOcc = 1.0;
     if (world) {
         bool prelit = (I.flags & I_PRELIT) != 0u;
-        light = (!prelit && (sflags & SURF_LIGHTMAP) != 0u) ? texture(textures[TEX_LIGHTMAP], vLm).rgb
-              : ((!prelit && (sflags & SURF_BRIGHT) != 0u) ? vec3(1.0) : vColor.rgb);
+        light = (!prelit && (sflags & SURF_BRIGHT) != 0u) ? vec3(1.0)
+              : ((!prelit && (sflags & SURF_LIGHTMAP) != 0u) ? texture(textures[TEX_LIGHTMAP], vLm).rgb : vColor.rgb);
 #ifdef RT
         if (frame.ambient.a > 0.5 && prelit && (I.flags & I_SKY) == 0u)
             light = prelitLampShadows(light, vWorld, vWorld + geoN * 1.0);
@@ -426,12 +431,14 @@ void main() {
             vec3 bounce = bounceRadiance(o, cosineDir(geoN, vec2(rnd(), rnd()))) * frame.gi.y;
             vec3 scale = frame.lightScale.rgb * frame.lightScale.a;
             // keep only the dynamic-light part of the classic term: the baked part is what the rays replace
-            light = (surfModel ? I.color.rgb : frame.ambient.rgb * 0.5 * scale) + direct * scale + bounce + dynLight;
+            light = (surfModel ? I.color.rgb : frame.ambient.rgb * scale) + direct * scale + bounce + dynLight;
         }
     }
 #endif
     vec3 color = tx.rgb * light;
-    if ((tflags & T_FULLBRIGHT) != 0u && !alphaOpacity) color = mix(color, tx.rgb, tx.a);
+    // the texture's fullbright layer; in the composed path the resolve applies it, so it bypasses the light filter
+    float fbMask = ((tflags & T_FULLBRIGHT) != 0u && !alphaOpacity) ? tx.a : 0.0;
+    if (!composed) color = mix(color, tx.rgb, fbMask);
 
 #ifdef RT
     bool water = (I.flags & I_WATER) != 0u;
@@ -473,9 +480,17 @@ void main() {
     else if (dbg == 3) color = vec3(ao);
     else if (dbg == 4) color = tx.rgb;
     else if (dbg == 5) color = vec3(fract(vWorld / 256.0));
+    else if (dbg == 8 && world) {
+        // where a world surface's baked light comes from: r = has a lightmap, g = baked vertex colour, b = lightmap value
+        color = vec3((sflags & SURF_LIGHTMAP) != 0u ? 1.0 : 0.0, dot(vColor.rgb, vec3(0.333)),
+                     (sflags & SURF_LIGHTMAP) != 0u ? dot(texture(textures[TEX_LIGHTMAP], vLm).rgb, vec3(0.333)) : 0.0);
+    } else if (dbg == 9 && world) {
+        // r = surface flag 0x40, g = surface flag 0x1000, b = world model (not the main world)
+        color = vec3((sflags & 0x40u) != 0u ? 1.0 : 0.0, (sflags & 0x1000u) != 0u ? 1.0 : 0.0, vInstance != 1u ? 1.0 : 0.15);
+    }
     else if (dbg == 6 || dbg == 7) {
         // 6: one colour per instance, 7: one colour per world surface (red channel 1 = world model, 0 = main world)
-        uint id = dbg == 6 ? vInstance : (world ? triTable[I.triBase + uint(gl_PrimitiveID)] : 0u);
+        uint id = dbg == 6 ? vInstance : (world ? (triTable[I.triBase + uint(gl_PrimitiveID)] & 0x7fffffffu) : 0u);
         uint hsh = id * 2654435761u;
         color = vec3(float((hsh >> 8) & 255u), float((hsh >> 16) & 255u), float((hsh >> 24) & 255u)) / 255.0 * (0.4 + 0.6 * clamp(dot(n, v), 0.0, 1.0));
         if (dbg == 7) color.r = (world && vInstance != 1u) ? 1.0 : 0.0;
@@ -491,7 +506,7 @@ void main() {
     if (composed) {
         // the resolve multiplies the filtered light back onto the albedo: store colour / albedo as the light
         vec3 albedo = dbg == 2 ? vec3(1.0) : max(tx.rgb, vec3(0.04));
-        outColor = vec4(albedo, 1.0);
+        outColor = vec4(albedo, dbg == 2 ? 0.0 : fbMask);
         outLight = vec4((dbg == 2 ? light : color) / (dbg == 2 ? vec3(1.0) : albedo), 1.0);
     } else {
         outColor = vec4(color, alpha);

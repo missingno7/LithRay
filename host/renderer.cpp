@@ -409,6 +409,21 @@ void Renderer::onTexUpload(const lr::TexUploadCmd &c, const uint8_t *p) {
     textures[c.id] = gfx.createImage(c.width, c.height, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, c.nMips);
     gfx.uploadImage(textures[c.id], px.data(), c.nMips);
     writeTextureSlot(c.id, textures[c.id].view);
+    {   // what the texture shows on average, and what its fullbright texels show (for emitters)
+        if (texStats.size() < kMaxTextures) texStats.resize(kMaxTextures);
+        TexStats ts = {};
+        uint32_t n0 = c.width * c.height, nfb = 0;
+        double sum[3] = {}, fb[3] = {};
+        const uint8_t *idx0 = pal + 1024;
+        for (uint32_t i = 0; i < n0; i++) {
+            const uint8_t *o = &px[(size_t)i * 4];
+            for (int k = 0; k < 3; k++) sum[k] += o[k];
+            if (fullbright && !alphaMask && idx0[i] >= 246) { for (int k = 0; k < 3; k++) fb[k] += o[k]; nfb++; }
+        }
+        for (int k = 0; k < 3; k++) { ts.avg[k] = (float)(sum[k] / (255.0 * n0)); ts.fbAvg[k] = nfb ? (float)(fb[k] / (255.0 * nfb)) : 0; }
+        ts.fbCoverage = (float)nfb / n0;
+        texStats[c.id] = ts;
+    }
     GTexInfo ti = {alphaMask ? T_ALPHA : (fullbright ? T_FULLBRIGHT : 0u), GlossFromName(c.name)};
     texInfoCpu[c.id] = ti;
     ((GTexInfo *)texInfoBuf.mapped)[c.id] = ti;
@@ -501,6 +516,60 @@ void Renderer::onWorldBegin(const lr::WorldBeginCmd &c, const uint8_t *p) {
     for (uint32_t i = 0; i < c.nSurfaces; i++) surfaces[i] = GSurface{0, ws[i].flags, 0, 0};
     uint32_t *gi = (uint32_t *)ibuf.mapped, *tri = (uint32_t *)triBuf.mapped;
     uint32_t ni = 0;
+    // "bright" polygons: the editor's bright surface tag (flag 0x20, never read by d3d.ren) or a lightmap the
+    // preprocessor saturated completely. They are self-lit; in the main world they also become emitters.
+    emitPolys.clear();
+    std::vector<uint8_t> polyBright(c.nPolys, 0);
+    uint32_t nFlagBright = 0, nBakedBright = 0, nVertexBright = 0;
+    for (uint32_t i = 0; i < c.nPolys; i++) {
+        const lr::WorldPoly &poly = wp[i];
+        bool flag = (ws[poly.surface].flags & lr::SURF_BRIGHT) != 0, baked = false;
+        if (poly.lmOffset != 0xffffffffu) {
+            const uint16_t *src = (const uint16_t *)(lm + poly.lmOffset);
+            baked = true;
+            for (uint32_t t = 0, n = (uint32_t)poly.lmWidth * poly.lmHeight; t < n && baked; t++)
+                baked = (src[t] >> 11) >= 29 && ((src[t] >> 5) & 63) >= 58 && (src[t] & 31) >= 29;
+        }
+        // no lightmap at all and fully bright baked vertex colours: the preprocessor's other way of writing "bright"
+        bool vertexBright = false;
+        if (poly.lmOffset == 0xffffffffu && !(ws[poly.surface].flags & lr::SURF_LIGHTMAP) && poly.nVertices >= 3) {
+            vertexBright = true;
+            for (uint32_t k = 0; k < poly.nVertices && vertexBright; k++) {
+                const uint8_t *col = wv[poly.firstVertex + k].color;
+                vertexBright = col[0] >= 235 && col[1] >= 235 && col[2] >= 235;
+            }
+        }
+        nVertexBright += vertexBright && !flag;
+        polyBright[i] = flag || baked || vertexBright;
+        nFlagBright += flag; nBakedBright += baked && !flag;
+    }
+    {
+        uint32_t nLm = 0, nNoLm = 0, hist[16] = {};
+        for (uint32_t i = 0; i < c.nSurfaces; i++) for (int b = 0; b < 16; b++) if (ws[i].flags & (1u << b)) hist[b]++;
+        for (uint32_t i = 0; i < c.nPolys; i++) (wp[i].lmOffset != 0xffffffffu ? nLm : nNoLm)++;
+        Log("surface flag counts (bit:count) 0:%u 1:%u 2:%u 3:%u 4:%u 5:%u 6:%u 7:%u 12:%u 14:%u 15:%u | polys with lightmap %u, without %u",
+            hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7], hist[12], hist[14], hist[15], nLm, nNoLm);
+    }
+    // every BSP: world models (signs, panels) sit where the level file put them; a moved door keeps its emitter in place
+    for (uint32_t i = 0; i < c.nPolys; i++) {
+        const lr::WorldPoly &poly = wp[i];
+        uint32_t sflags = ws[poly.surface].flags;
+        if (poly.nVertices < 3 || (sflags & (lr::SURF_INVISIBLE | lr::SURF_NONEXISTANT | lr::SURF_SKY | lr::SURF_TRANSPARENT))) continue;
+        EmitPoly e = {};
+        V3 p0{wv[poly.firstVertex].pos.x, wv[poly.firstVertex].pos.y, wv[poly.firstVertex].pos.z};
+        for (uint32_t k = 0; k < poly.nVertices; k++) {
+            V3 q{wv[poly.firstVertex + k].pos.x, wv[poly.firstVertex + k].pos.y, wv[poly.firstVertex + k].pos.z};
+            e.center = e.center + q * (1.0f / poly.nVertices);
+            if (k >= 2) {
+                V3 q1{wv[poly.firstVertex + k - 1].pos.x, wv[poly.firstVertex + k - 1].pos.y, wv[poly.firstVertex + k - 1].pos.z};
+                e.area += 0.5f * length(cross(q1 - p0, q - p0));
+            }
+        }
+        e.normal = V3{ws[poly.surface].normal.x, ws[poly.surface].normal.y, ws[poly.surface].normal.z};
+        e.surface = poly.surface; e.bright = polyBright[i] != 0;
+        emitPolys.push_back(e);
+    }
+    Log("bright polygons: %u by surface flag, %u by saturated lightmap, %u by bright vertex colours without a lightmap", nFlagBright, nBakedBright, nVertexBright);
     bsps.assign(c.nBsps, BspGpu());
     for (uint32_t b = 0; b < c.nBsps; b++) {
         BspGpu &g = bsps[b];
@@ -517,7 +586,7 @@ void Renderer::onWorldBegin(const lr::WorldBeginCmd &c, const uint8_t *p) {
                 if (sky != (pass == 1) || poly.nVertices < 3) continue;
                 if (ni + (poly.nVertices - 2) * 3 > kStaticIndices) break;
                 for (uint32_t k = 2; k < poly.nVertices; k++) {
-                    tri[ni / 3] = poly.surface;
+                    tri[ni / 3] = poly.surface | (polyBright[i] ? 0x80000000u : 0u);
                     gi[ni++] = poly.firstVertex; gi[ni++] = poly.firstVertex + k - 1; gi[ni++] = poly.firstVertex + k;
                 }
                 for (uint32_t k = 0; k < poly.nVertices; k++) {
@@ -547,16 +616,8 @@ void Renderer::onWorldBegin(const lr::WorldBeginCmd &c, const uint8_t *p) {
     haveWorld = true;
     historyMap.clear(); historyValid = false; prevValid = false; loggedKeys.clear();
     loadLamps(c.worldFile, c.rezSources);
-    if (!lamps.empty()) {
-        memcpy(lampBuf.mapped, lamps.data(), lamps.size() * sizeof(GLamp));
-        uint32_t base = (uint32_t)lampCells.size();
-        uint32_t *ld = (uint32_t *)lampDataBuf.mapped;
-        size_t maxWords = lampDataBuf.size / 4;
-        if (lampCells.size() + lampIndices.size() <= maxWords) {
-            for (size_t i = 0; i < lampCells.size(); i++) ld[i] = lampCells[i] + base;
-            memcpy(ld + base, lampIndices.data(), lampIndices.size() * 4);
-        } else { Log("lamp grid too large: lamp shadows off"); lampGrid.count = 0; }
-    }
+    buildLampGrid();
+    emittersBuilt = false;
     Log("world '%s': %u bsps, %u polys, %u vertices, %u triangles, lightmap atlas %ux%u (%zu lightmaps)", c.worldName, c.nBsps, c.nPolys,
         c.nVertices, staticTris, AW, AH, order.size());
 }
@@ -743,7 +804,7 @@ void Renderer::addModel(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const
     }
     gi.color[3] = chrome ? 1.0f : o.rgba[3] / 255.0f;
     if (!(mp.hookFlags & lr::MHF_USETEXTURE) || !mp.skinTex) gi.flags |= I_NOTEXTURE;
-    if (texInfoCpu[mp.skinTex < kMaxTextures ? mp.skinTex : 0].flags & T_ALPHA) gi.flags |= I_ALPHATEST;
+    // no alpha test: d3d.ren never enables it. A solid model ignores its skin's alpha mask; a translucent one blends by it.
     if (chrome) { gi.flags |= I_CHROME; gi.light[3] = std::max(1.0f - o.rgba[3] / 255.0f, 0.15f); }
     if (close) gi.flags |= I_CLOSE;
     if (sky) gi.flags |= I_SKY | I_UNLIT;
@@ -865,6 +926,11 @@ void Renderer::buildScene(const lr::SceneCmd &sc) {
     if (worldOk && sc.nSurfaceTex == surfaces.size()) {
         for (uint32_t i = 0; i < sc.nSurfaceTex; i++) surfaces[i].tex = surfTex[i] < kTexLightmap ? surfTex[i] : 0;
         memcpy(surfBuf.mapped, surfaces.data(), surfaces.size() * sizeof(GSurface));
+    }
+    if (worldOk && gfx.rt && (!emittersBuilt || emittersStrength != settings.giEmissive)) {
+        bool textured = false;
+        for (const GSurface &sf : surfaces) if (sf.tex) { textured = true; break; }
+        if (textured) buildEmitters();
     }
     const uint8_t *uvEnd = p + sc.uvBytes;
     if (worldOk)

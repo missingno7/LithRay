@@ -106,6 +106,8 @@ private:
     void writeTextureSlot(uint32_t slot, VkImageView view);
     void saveScreenshot();
     void loadLamps(const char *worldFile, const char *rezSources);
+    void buildLampGrid();           // (re)builds the grid over `lamps` and uploads lamps + grid
+    void buildEmitters();           // bright surfaces and fullbright texels become light sources (needs the surface textures)
     void logOnce(uint32_t key, const char *fmt, ...);
     bool ensureWindow();
 
@@ -142,6 +144,12 @@ private:
     std::vector<uint8_t> gridData;
     std::string worldName;
     std::vector<GLamp> lamps; std::vector<uint32_t> lampCells, lampIndices; GLampGrid lampGrid = {};
+    // emitters: polygons of the main world that can emit (decided once their textures are known)
+    struct EmitPoly { V3 center, normal; float area; uint32_t surface; bool bright; };
+    std::vector<EmitPoly> emitPolys;
+    size_t fileLampCount = 0; bool emittersBuilt = false; float emittersStrength = -1;
+    struct TexStats { float avg[3], fbAvg[3], fbCoverage; };
+    std::vector<TexStats> texStats;
     float levelAmbient[3] = {};
     V3 worldMin, worldMax;
     std::unordered_map<uint32_t, int> loggedKeys;

@@ -48,6 +48,16 @@ Notes from real runs:
 * "You have been disconnected from the server." is printed at the start of every `+runworld` session. It did not
   stop the game in any run. Whether d3d.ren shows it too is unverified.
 
+## Two instances at once
+
+`.\tools\run.ps1 -Dev ...` runs the binaries from `build\` as `lithray_dev.ren` with their own host, log
+(`lithray_host_dev.log`) and command file, next to a deployed instance that is being played. A key press anywhere
+while the title splash is up cancels `+runworld` (the game reads the keyboard globally), so a scripted run can end
+up in the menu when someone is typing.
+
+While a game started with `-Interactive` runs, commands can be sent to it by writing `lithray_cmd.txt` into the game
+directory (same syntax as `-Script`): that is how captures are taken at the spot a player is standing on.
+
 ## Logs
 
 * `lithray_shim.log` (appended): Init/Term, host start, world statistics, every model definition, rejected data.
@@ -67,10 +77,13 @@ Saved to `autoexec.cfg` like any engine variable.
 | `lr_RT` | 1 | 0 = raster baseline, 1 = ray-traced lighting |
 | `lr_RTShadows` | 1 | lamp and dynamic-light shadow rays |
 | `lr_RTReflections` | 1 | reflection strength (0 disables) |
-| `lr_RTAO` | 1 | ray-traced ambient occlusion |
+| `lr_RTAO` | 1 | ray-traced ambient occlusion (lightmap mode) |
+| `lr_RTGI` | 1 | 1 = full ray-traced lighting (lamps + bounce + emitters, no lightmaps); 0 = lightmaps with ray-traced shadows |
+| `lr_GIDirect` / `lr_GIIndirect` / `lr_GIEmissive` | 1 / 1.3 / 1 | strength of lamps, bounce light and emitters |
+| `lr_GIHistory` | 0.9 | weight of the accumulated lighting history (lower = less lag, more noise) |
 | `lr_VSync` | 1 | FIFO, else mailbox / immediate |
 | `lr_MaxFPS` | 0 | frame cap (forced to 100 while the game-speed patch is not applied) |
-| `lr_DebugView` | 0 | 1 normals, 2 lighting only, 3 ambient occlusion, 4 albedo, 5 world position |
+| `lr_DebugView` | 0 | 1 normals, 2 lighting only, 3 ambient occlusion, 4 albedo, 5 world position, 6 one colour per instance (a screenshot then logs the instance table), 7 per surface, 8 baked-light source (r lightmapped, g vertex colour, b lightmap value), 9 surface flags / world model |
 | `lr_Widescreen` | 1 | Hor+ (keep the vertical FOV), 3D uses the whole window |
 | `lr_GameSpeedFix`, `lr_MouseFix` | 1 | compatibility patches (see ARCHITECTURE.md) |
 | `lr_Background` | 0 | keep running without focus (test runs; set on the command line) |

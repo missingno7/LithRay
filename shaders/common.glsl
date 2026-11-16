@@ -74,5 +74,13 @@ layout(set = 0, binding = 11, scalar) readonly buffer LampData { uint lampData[]
 #define SURF_BRIGHT 0x20u
 #define SURF_LIGHTMAP 0x80u
 
+// The surface of a world triangle. Bit 31 of the table entry marks a "bright" polygon (self-lit, an emitter).
+Surface triSurface(uint base, uint prim) {
+    uint t = triTable[base + prim];
+    Surface s = surfaces[t & 0x7fffffffu];
+    if ((t & 0x80000000u) != 0u) s.flags |= SURF_BRIGHT;
+    return s;
+}
+
 vec3 xformPoint(vec4 r0, vec4 r1, vec4 r2, vec3 p) { vec4 v = vec4(p, 1.0); return vec3(dot(r0, v), dot(r1, v), dot(r2, v)); }
 vec3 xformDir(vec4 r0, vec4 r1, vec4 r2, vec3 d) { return vec3(dot(r0.xyz, d), dot(r1.xyz, d), dot(r2.xyz, d)); }

@@ -98,22 +98,63 @@ accumulated along them with depth rejection.
 
 ## Rendering
 
-One forward pass (`scene.frag`, compiled twice: raster and `-DRT`) into colour + aux (motion, AO) + depth, then a
-resolve pass (`post.frag`) that filters/accumulates AO, applies the camera light add and the 2D layer, and writes
-the swapchain.
+Frame = opaque pass -> lighting resolve -> translucent pass -> post.
 
-* **Raster baseline (`lr_RT 0`)**: texture × lightmap × light scale (`Saturate` doubles), fullbright texels,
+1. **Opaque pass** (`scene.frag`, compiled twice: raster and `-DRT`): sky, world, solid objects and the view model
+   into colour, aux (motion vectors, AO, packed normal), light and depth. A pixel is either *final* (`light.a = 0`:
+   sky, emissive, view model, raster mode) or *composed* (`light.a = 1`: colour holds the albedo and `light` the
+   per-pixel light estimate).
+2. **Lighting resolve** (`compose.frag`): filters the light estimate across neighbours on the same surface (depth +
+   normal weights), blends it with the reprojected history, multiplies it back onto the albedo, adds the texture's
+   fullbright layer unfiltered, applies fog. Writes the lit scene and the new light history.
+3. **Translucent pass**: every blended group over the lit scene, depth tested, in d3d.ren's fixed group order.
+4. **Post** (`post.frag`): ambient occlusion (lightmap mode only), camera light add, the 2D layer, swapchain.
+
+Lighting modes:
+
+* **Raster baseline (`lr_RT 0`)**: texture x lightmap x light scale (`Saturate` doubles), fullbright texels,
   LithTech's 16-step half-Lambert model ramp from ambient + light-grid directional, signed dynamic lights without
-  occlusion, distance fog, d3d.ren's fixed draw-group order with no depth sorting, one-sided world polygons.
-* **Ray traced (`lr_RT 1`)**:
-  * *Lamp shadows.* The level's static lights exist only in the world file (the engine never creates them). The
-    host reads them from the game's rez files. World surfaces keep their baked lightmap and lose a lamp's estimated
-    contribution where a ray to it is blocked by something that was **not** in the bake (models, doors) — and never
-    more light than the lightmap shows arrived. Models are lit by the lamps directly with shadow rays against
-    everything, replacing the matching share of the light-grid term.
-  * *Dynamic light shadows* (ray per light), *ambient occlusion* (2 rays, filtered + accumulated),
-    *reflections* (one mirror ray, hit shaded classically; reflectivity from a texture-name keyword table,
-    environment-mapped models and water).
+  occlusion, distance fog, one-sided world polygons.
+* **Lightmaps with ray-traced shadows (`lr_RT 1`, `lr_RTGI 0`)**: world surfaces keep their lightmap and lose a lamp's
+  estimated contribution where a ray to it is blocked by something that was not in the bake (models, doors, masked
+  walls); models are lit by the lamps with shadow rays; ambient occlusion from short rays.
+* **Full ray-traced lighting (`lr_RT 1`, `lr_RTGI 1`, the default)**: no lightmap and no light grid on opaque world
+  and model surfaces. Per pixel: every lamp in reach with one shadow ray towards a jittered point of the lamp
+  (soft edges once accumulated), plus one cosine-distributed bounce ray whose hit is lit by one randomly chosen
+  lamp (with its own shadow ray), the level ambient, emissive texels or the sky. The estimate is denoised by the
+  resolve pass.
+
+Where the light comes from (`host/lamps.cpp`):
+
+* **The level's static lights** exist only in the world file (the engine never creates them: `CF_NORUNTIME`). The host
+  reads `Light` / `DirLight` / `ObjectLight` objects from the game's rez files and keeps them in a uniform grid.
+* **Emitters**: polygons whose texture has fullbright texels (palette entries 246..255 of a `DTX_FULLBRITE` texture
+  -- neon lines, lamp panels, signs), plus polygons the level marks bright (surface flag 0x20, a saturated lightmap, or
+  full-white baked vertex colours without a lightmap). Each becomes a cosine-lobed lamp in front of the polygon,
+  coloured by the texture's average (fullbright) colour and sized by the polygon; it goes through the same code as
+  the file lamps. The emitter list is built once the surface textures are known.
+* **Dynamic lights** (`OT_LIGHT` objects, signed colours) with one shadow ray each.
+
+Calibration notes (measured against the lightmap mode at the same camera): the original bake has no cosine term
+(`colour * BrightScale * (1 - d/r) * cone`, one-sided) and clamps at white. Pure Lambert made every wall and ceiling
+visibly darker than the designers' result, so the direct term uses `0.5 + 0.5 n.l`, and the resolve applies a soft
+shoulder above mid-grey instead of the bake's clamp. `lr_GIDirect`, `lr_GIIndirect`, `lr_GIEmissive` scale the three
+contributions.
+
+Reflections (one mirror ray, hit shaded by the lamps in full mode or by its lightmap otherwise) follow the engine's
+own flags: a model with `FLAG_ENVIRONMENTMAP` reflects by `1 - object alpha` (d3d.ren's chrome pass blends the skin
+over the environment map by that alpha), a polygrid reflects when it has an environment map. A keyword table on
+texture names adds a Fresnel-weighted gloss to some world surfaces; that part is not game data.
+
+Sky (reconstruction `port_notes/sky.md`): drawn first from the sky camera, which sits at the player's fractional
+position through the world box mapped into the sky view box; objects in list order, each one covering the previous
+(depth is cleared before every sky object, which reproduces the original's painter's pass while letting each
+object sort itself); front faces only, even for translucent sky world models; fogged with the sky fog range from the
+sky camera. In blended passes a texture's alpha is opacity, including the alpha bit of fullbright texels (how the
+moon's surround is transparent).
+
+Ray queries alpha-test: masked world models (fences, grates) are non-opaque geometry in the TLAS (mask 8) and every
+candidate hit samples the texture's alpha. TLAS masks: 1 world, 2 dynamic models, 4 solid world models, 8 masked.
 
 All shading stays in the game's display-referred 8-bit space so the baseline matches the original look.
 
