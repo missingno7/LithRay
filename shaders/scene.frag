@@ -308,7 +308,8 @@ float inScatter(vec3 eye, vec3 surf) {
 
 // Classic shading of whatever a ray hit (no recursion): albedo x baked light.
 vec3 shadeHit(rayQueryEXT rq, vec3 origin, vec3 dir) {
-    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) return frame.skyColor.rgb;
+    bool lin = frame.mat.z > 0.5;      // modern look: the result is scene-linear (albedo linearised, light as computed)
+    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) return lin ? pow(frame.skyColor.rgb, vec3(2.2)) : frame.skyColor.rgb;
     uint ci = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
     uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
     vec2 bc = rayQueryGetIntersectionBarycentricsEXT(rq, true);
@@ -349,16 +350,17 @@ vec3 shadeHit(rayQueryEXT rq, vec3 origin, vec3 dir) {
         vec3 light = (s.flags & SURF_BRIGHT) != 0u ? vec3(1.0) : (lampLit && (C.flags & I_PRELIT) == 0u) ? hitLamps
                    : ((s.flags & SURF_LIGHTMAP) != 0u ? textureLod(textures[TEX_LIGHTMAP], lm, 0.0).rgb : vc.rgb);
         light *= frame.lightScale.rgb * frame.lightScale.a;
-        color = tx.rgb * light;
-        if ((texInfo[s.tex].flags & T_FULLBRIGHT) != 0u) color = mix(color, tx.rgb, tx.a);
+        vec3 albH = lin ? pow(tx.rgb, vec3(2.2)) : tx.rgb;
+        color = albH * light;
+        if ((texInfo[s.tex].flags & T_FULLBRIGHT) != 0u) color = mix(color, albH * (lin ? 3.2 : 1.0), tx.a);
     } else {
         Instance M = C;
         if ((C.flags & I_CONTAINER) != 0u) M = instances[triTable[C.triBase + prim]];
         vec4 tx = (M.flags & I_NOTEXTURE) != 0u ? vec4(1.0) : sampleTexLod(M.tex, uv, lod);
         vec3 light = (M.flags & I_MODEL) != 0u ? (lampLit ? M.color.rgb + hitLamps : modelLight(M, n)) : M.color.rgb * vc.rgb;
-        color = tx.rgb * light;
+        color = (lin ? pow(tx.rgb, vec3(2.2)) : tx.rgb) * light;
     }
-    if (frame.fogColor.a > 0.5) color = mix(color, frame.fogColor.rgb, clamp((t - frame.fogParams.x) / max(frame.fogParams.y - frame.fogParams.x, 1.0), 0.0, 1.0));
+    if (frame.fogColor.a > 0.5) color = mix(color, lin ? pow(frame.fogColor.rgb, vec3(2.2)) : frame.fogColor.rgb, clamp((t - frame.fogParams.x) / max(frame.fogParams.y - frame.fogParams.x, 1.0), 0.0, 1.0));
     return color;
 }
 
@@ -579,7 +581,8 @@ void main() {
             vec3 rdir = reflect(-v, normalize(mix(geoN, nb, 0.6)));
             if (dot(rdir, geoN) < 0.02) rdir = reflect(-v, geoN);
             vec3 rcol = traceRadiance(origin, rdir, 6000.0);
-            if (look && composed) rcol = pow(rcol, vec3(2.2));
+            // (decal / composed pixels are linear; everything else is still display-referred here and is linearised when written)
+            if (look && !composed && !decalLit) rcol = pow(max(rcol, vec3(0.0)), vec3(1.0 / 2.2));
             if (metalR) rcol *= mix(vec3(1.0), tx.rgb * 1.7, 0.6);       // tinted reflection
             color = mix(color, rcol, clamp(fres * frame.rt.z, 0.0, 1.0));
         }

@@ -216,7 +216,9 @@ void Renderer::addPolyGrid(const lr::SceneCmd &sc, const lr::ObjectRecord &o, co
     GInstance gi = unlitInstance(tex, fi, I_WATER | (sky ? I_SKY : 0));
     // d3d.ren draws an environment-map pass on polygrids that have one (alone with FLAG_ENVIRONMENTMAPONLY): with ray
     // tracing that pass becomes a real reflection; grids without an environment map do not reflect
-    gi.light[3] = pg.envTex ? ((o.flags & lr::FLAG_ENVIRONMENTMAPONLY) ? 0.9f : 0.5f) : 0.0f;
+    // Blood II's water grids often have no environment map at all (the original then shows a flat texture); with ray
+    // tracing a water surface reflects anyway, more strongly where the game does ask for an environment map
+    gi.light[3] = pg.envTex ? ((o.flags & lr::FLAG_ENVIRONMENTMAPONLY) ? 0.9f : 0.6f) : 0.45f;
     History &hist = historyMap[o.key];
     if (hist.frame + 1 == frameIndex && hist.nVertices == W * H) gi.prevVertexDelta = (int32_t)hist.firstVertex - (int32_t)fv;
     hist.firstVertex = fv; hist.nVertices = W * H; hist.frame = frameIndex;
