@@ -110,6 +110,28 @@ Frame = opaque pass -> lighting resolve -> translucent pass -> post.
 3. **Translucent pass**: every blended group over the lit scene, depth tested, in d3d.ren's fixed group order.
 4. **Post** (`post.frag`): ambient occlusion (lightmap mode only), camera light add, the 2D layer, swapchain.
 
+Colour pipeline: the scene is rendered and lit in 16-bit float. Two looks (`lr_Look`):
+
+* **Modern (1, default with ray tracing)**: composed pixels are lit in linear light (albedo `^2.2`), lamps use true
+  Lambert with their light concentrated near the lamp, the ambient floor is small and the bounce does the filling;
+  everything else (sky, sprites, emissive, view model, translucents) is converted to linear when written, with room
+  above white for things that glow. Then bloom (threshold, 1/4 and 1/16 resolution blurs), exposure, the ACES filmic
+  curve, output encoding.
+* **Faithful (0)**: display-referred values as the original computes them, no tone mapping, a soft shoulder instead
+  of the bake's clamp.
+
+Output: a 10-bit swapchain (`A2B10G10R10`) when the surface offers it, with triangular dithering, so smooth gradients
+do not band; `lr_HDR 1` switches to HDR10 (ST.2084, Rec.2020, 200-nit paper white) when the display lists it. The 2D
+layer is composited after encoding-space conversion so menus and HUD keep their colours.
+
+Soft shadows: each lamp is a small sphere (`lr_ShadowSoftness`, world units); one shadow ray per lamp goes to a random
+point of it, and the resolve accumulates the direct light over a few frames **without spatial blur**, clamping the
+history to the current 3x3 range. Shadows stay sharp at contact and soften with distance from the caster.
+
+Volumetric light (`lr_Volumetric`): four jittered steps along the view ray, one randomly chosen lamp with a shadow ray
+at each; the monochrome result rides in the bounce buffer's alpha, is filtered and accumulated with it, and is added
+tinted by the level's fog colour (stronger when the level has fog).
+
 Lighting modes:
 
 * **Raster baseline (`lr_RT 0`)**: texture x lightmap x light scale (`Saturate` doubles), fullbright texels,

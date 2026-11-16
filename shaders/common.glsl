@@ -54,7 +54,8 @@ layout(set = 0, binding = 1, scalar, row_major) uniform Frame {
     vec4 misc;                      // frame index, debug view, time, exposure
     vec4 skyColor;                  // what rays see when they leave the world
     vec4 viewport;                  // scene viewport in pixels: x, y, w, h
-    vec4 mat;                       // invented materials: x = bump strength, y = specular scale
+    vec4 vol;                       // volumetric light: x = density (0 = off), y = max march distance
+    vec4 mat;                       // x = bump strength, y = specular scale, z = modern look (linear HDR output)
     vec4 gi;                        // full ray-traced lighting: enabled, indirect scale, direct scale, lamp radius
     vec4 skyEye;                    // the sky camera's position (sky objects are culled and fogged from it)
     vec4 ambient;                   // rgb: level lightmap ambient, a: static lamp shadows on

@@ -122,6 +122,10 @@ static const char *kOptions[][2] = {
     {"lr_RTShadows", "1"}, {"lr_RTReflections", "1"}, {"lr_RTAO", "1"},
     {"lr_RTGI", "1"},          // 1: lamps + one indirect bounce replace the lightmaps; 0: lightmaps with ray-traced shadows
     {"lr_GIDirect", "0.9"}, {"lr_GIIndirect", "1"}, {"lr_GIHistory", "0.9"}, {"lr_GIEmissive", "1"},
+    {"lr_Look", "1"},          // 1: modern look (linear HDR lighting, real falloff, bloom, filmic tone mapping); 0: faithful
+    {"lr_Bloom", "1"}, {"lr_HDR", "0"},
+    {"lr_ShadowSoftness", "3"},        // lamp radius in world units: 0 = hard shadows; larger = wider penumbra away from the caster
+    {"lr_Volumetric", "1"},            // light scattered in the air between the eye and the surface (0 = off)        // bloom strength; 1 = HDR10 output when the display offers it
     {"lr_Bump", "1"}, {"lr_Specular", "1"},     // generated normal maps / highlights (not game data; 0 turns them off)
     {"lr_VSync", "1"}, {"lr_MaxFPS", "0"}, {"lr_DebugView", "0"}, {"lr_Exposure", "1"}, {"lr_Widescreen", "1"},
     {"lr_GameSpeedFix", "1"}, {"lr_MouseFix", "1"},

@@ -23,6 +23,7 @@ struct GLampGrid { float origin[4]; int32_t dims[3]; uint32_t count; };
 struct GFrame {
     M4 viewProj[3]; M4 prevViewProj[3];
     float camPos[4], fogColor[4], fogParams[4], lightScale[4], modelLightDir[4], rt[4], misc[4], skyColor[4], viewport[4];
+    float vol[4];               // volumetric light: density, max distance
     float mat[4];               // invented materials: bump strength, specular scale
     float gi[4];                // full ray-traced lighting: enabled, indirect scale, direct scale, lamp radius
     float skyEye[4];
@@ -103,7 +104,7 @@ private:
     V3 sampleGrid(V3 pos) const;
     void buildAccel(VkCommandBuffer cmd);
     void drawGroups(bool opaquePass, bool rtOn);
-    VkPipeline makeFullscreenPipeline(const uint32_t *fs, size_t fsBytes, VkFormat f0, VkFormat f1);
+    VkPipeline makeFullscreenPipeline(const uint32_t *fs, size_t fsBytes, VkFormat f0, VkFormat f1, VkFormat f2 = VK_FORMAT_UNDEFINED);
     void writeTextureSlot(uint32_t slot, VkImageView view);
     void saveScreenshot();
     void loadLamps(const char *worldFile, const char *rezSources);
@@ -127,9 +128,14 @@ private:
     bool frameInFlight = false;
 
     Image sceneColor, sceneAux, sceneDepth, history[2], overlayImg, white;
+    Image bloom[4];                                 // 1/4 A, 1/4 B, 1/16 A, 1/16 B (HDR)
+    VkDescriptorSet bloomSet[5] = {};               // sources: lit scene, bloom[0..3]
+    VkPipeline bloomPipe = VK_NULL_HANDLE;
+    VkFormat postPipeFormat = VK_FORMAT_UNDEFINED;
+    Image directHist[2];                            // rgb: accumulated direct light (soft shadows), a: accumulated in-scattering
     Image sceneIndirect;                            // the noisy bounce light (the only part that is filtered)
     Image sceneLight, lightHist[2], litColor;       // full ray-traced lighting: raw estimate, accumulated history, resolved scene
-    bool lightHistValid = false;
+    bool lightHistValid = false, modernLook = false;
     Image textures[kMaxTextures];
     Image normalMaps[kMaxTextures / 2], flatNormal;   // generated from the textures; bound at slot id + 2048
     std::vector<GTexInfo> texInfoCpu;

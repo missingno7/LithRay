@@ -17,6 +17,11 @@ void Gfx::init() {
     VKC(volkInitialize());
     bool validate = GetEnvironmentVariableA("LITHRAY_VALIDATE", nullptr, 0) != 0;
     std::vector<const char *> layers, iext = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
+    {   // HDR10 colour spaces are only listed with this extension
+        uint32_t en = 0; vkEnumerateInstanceExtensionProperties(nullptr, &en, nullptr);
+        std::vector<VkExtensionProperties> ex(en); vkEnumerateInstanceExtensionProperties(nullptr, &en, ex.data());
+        for (auto &e : ex) if (!strcmp(e.extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) iext.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
+    }
     if (validate) {
         uint32_t n = 0; vkEnumerateInstanceLayerProperties(&n, nullptr);
         std::vector<VkLayerProperties> lp(n); vkEnumerateInstanceLayerProperties(&n, lp.data());
@@ -141,7 +146,7 @@ void Gfx::destroySwapchain(bool surfaceToo) {
     extent = {};
 }
 
-bool Gfx::createSwapchain(HWND hwnd, bool vsyncOn) {
+bool Gfx::createSwapchain(HWND hwnd, bool vsyncOn, bool wantHdr) {
     vkDeviceWaitIdle(dev);
     if (!surface) {
         VkWin32SurfaceCreateInfoKHR sci = {VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
@@ -158,7 +163,13 @@ bool Gfx::createSwapchain(HWND hwnd, bool vsyncOn) {
     uint32_t fn = 0; vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surface, &fn, nullptr);
     std::vector<VkSurfaceFormatKHR> fmts(fn); vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surface, &fn, fmts.data());
     VkSurfaceFormatKHR fmt = fmts[0];
+    // preference: 10 bits per channel (no banding in smooth gradients), then 8; HDR10 only on request
     for (auto &f : fmts) if (f.format == VK_FORMAT_B8G8R8A8_UNORM && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) fmt = f;
+    for (auto &f : fmts) if (f.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) fmt = f;
+    hdrAvailable = false;
+    for (auto &f : fmts) if (f.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 && f.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) { hdrAvailable = true; if (wantHdr) fmt = f; }
+    hdrWanted = wantHdr;
+    hdrOutput = fmt.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT;
     uint32_t pn = 0; vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &pn, nullptr);
     std::vector<VkPresentModeKHR> pms(pn); vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &pn, pms.data());
     VkPresentModeKHR pm = VK_PRESENT_MODE_FIFO_KHR;
@@ -191,7 +202,8 @@ bool Gfx::createSwapchain(HWND hwnd, bool vsyncOn) {
         VkImageView v; VKC(vkCreateImageView(dev, &vi, nullptr, &v));
         swapViews.push_back(v);
     }
-    Log("swapchain %ux%u, %u images, present mode %d", extent.width, extent.height, in, (int)pm);
+    Log("swapchain %ux%u, %u images, present mode %d, format %d%s%s", extent.width, extent.height, in, (int)pm, (int)swapFormat,
+        hdrOutput ? " HDR10" : "", (!hdrOutput && hdrAvailable) ? " (HDR10 available: lr_HDR 1)" : "");
     return true;
 }
 

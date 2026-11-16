@@ -8,7 +8,8 @@ static constexpr uint32_t kStaticVerts = 600000, kDynVerts = 500000;
 static constexpr uint32_t kStaticIndices = 2400000, kDynIndices = 1500000;
 static constexpr uint32_t kMaxInstances = 16384, kMaxSurfaces = 131072, kMaxLights = 64, kMaxTlas = 4096;
 // aux carries a 24-bit packed normal in one channel, hence 32-bit floats
-static constexpr VkFormat kColorFmt = VK_FORMAT_R8G8B8A8_UNORM, kAuxFmt = VK_FORMAT_R32G32B32A32_SFLOAT, kDepthFmt = VK_FORMAT_D32_SFLOAT,
+// the scene is rendered and lit in 16-bit float: no banding, and room above white for the modern look
+static constexpr VkFormat kColorFmt = VK_FORMAT_R16G16B16A16_SFLOAT, kAuxFmt = VK_FORMAT_R32G32B32A32_SFLOAT, kDepthFmt = VK_FORMAT_D32_SFLOAT,
                           kLightFmt = VK_FORMAT_R16G16B16A16_SFLOAT;
 
 // ------------------------------------------------------------------ setup
@@ -61,30 +62,31 @@ void Renderer::createStatic() {
         VKC(vkCreateDescriptorSetLayout(dev, &li, nullptr, &sceneLayout));
     }
     {
-        VkDescriptorSetLayoutBinding b[6];
-        for (uint32_t i = 0; i < 6; i++) b[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        VkDescriptorSetLayoutBinding b[8];
+        for (uint32_t i = 0; i < 8; i++) b[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
         VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        li.bindingCount = 6; li.pBindings = b;
+        li.bindingCount = 8; li.pBindings = b;
         VKC(vkCreateDescriptorSetLayout(dev, &li, nullptr, &postLayout));
     }
-    VkDescriptorPoolSize ps[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures + 64}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
+    VkDescriptorPoolSize ps[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures + 160}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 24}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2}};
     VkDescriptorPoolCreateInfo pi = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT; pi.maxSets = 8;
+    pi.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT; pi.maxSets = 16;
     pi.poolSizeCount = gfx.rt ? 4 : 3; pi.pPoolSizes = ps;
     VKC(vkCreateDescriptorPool(dev, &pi, nullptr, &descPool));
-    VkDescriptorSetLayout layouts[5] = {sceneLayout, postLayout, postLayout, postLayout, postLayout};
-    VkDescriptorSet sets[5];
+    VkDescriptorSetLayout layouts[10] = {sceneLayout, postLayout, postLayout, postLayout, postLayout, postLayout, postLayout, postLayout, postLayout, postLayout};
+    VkDescriptorSet sets[10];
     VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool = descPool; ai.descriptorSetCount = 5; ai.pSetLayouts = layouts;
+    ai.descriptorPool = descPool; ai.descriptorSetCount = 10; ai.pSetLayouts = layouts;
     VKC(vkAllocateDescriptorSets(dev, &ai, sets));
     sceneSet = sets[0]; postSet[0] = sets[1]; postSet[1] = sets[2]; composeSet[0] = sets[3]; composeSet[1] = sets[4];
+    for (int i = 0; i < 5; i++) bloomSet[i] = sets[5 + i];
 
     VkPushConstantRange pcr = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8};
     VkPipelineLayoutCreateInfo pli = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pli.setLayoutCount = 1; pli.pSetLayouts = &sceneLayout; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pcr;
     VKC(vkCreatePipelineLayout(dev, &pli, nullptr, &scenePL));
-    VkPushConstantRange ppcr = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 64};
+    VkPushConstantRange ppcr = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 96};
     pli.pSetLayouts = &postLayout; pli.pPushConstantRanges = &ppcr;
     VKC(vkCreatePipelineLayout(dev, &pli, nullptr, &postPL));
 
@@ -126,8 +128,9 @@ void Renderer::createStatic() {
     for (int r = 0; r < (gfx.rt ? 2 : 1); r++)
         for (int p = 0; p < P_COUNT; p++) pipes[r][p] = makeScenePipeline((Pipe)p, r == 1);
 
-    postPipe = makeFullscreenPipeline(post_frag_spv, sizeof(post_frag_spv), VK_FORMAT_B8G8R8A8_UNORM, kAuxFmt);
-    composePipe = makeFullscreenPipeline(compose_frag_spv, sizeof(compose_frag_spv), kColorFmt, kLightFmt);
+    // the post pipeline depends on the swapchain format: created with the targets
+    bloomPipe = makeFullscreenPipeline(bloom_frag_spv, sizeof(bloom_frag_spv), kLightFmt, VK_FORMAT_UNDEFINED);
+    composePipe = makeFullscreenPipeline(compose_frag_spv, sizeof(compose_frag_spv), kColorFmt, kLightFmt, kLightFmt);
 
     VkCommandBufferAllocateInfo cai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cai.commandPool = gfx.pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
@@ -143,7 +146,7 @@ void Renderer::createStatic() {
     QueryPerformanceCounter(&statStart);
 }
 
-VkPipeline Renderer::makeFullscreenPipeline(const uint32_t *fsCode, size_t fsBytes, VkFormat f0, VkFormat f1) {
+VkPipeline Renderer::makeFullscreenPipeline(const uint32_t *fsCode, size_t fsBytes, VkFormat f0, VkFormat f1, VkFormat f2) {
     VkDevice dev = gfx.dev;
     VkShaderModule vs = gfx.shader(post_vert_spv, sizeof(post_vert_spv)), fs = gfx.shader(fsCode, fsBytes);
     VkPipelineShaderStageCreateInfo st[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
@@ -159,16 +162,17 @@ VkPipeline Renderer::makeFullscreenPipeline(const uint32_t *fsCode, size_t fsByt
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineDepthStencilStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    VkPipelineColorBlendAttachmentState ba[2] = {};
-    ba[0].colorWriteMask = ba[1].colorWriteMask = 0xf;
+    VkPipelineColorBlendAttachmentState ba[3] = {};
+    ba[0].colorWriteMask = ba[1].colorWriteMask = ba[2].colorWriteMask = 0xf;
     VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    cb.attachmentCount = 2; cb.pAttachments = ba;
+    uint32_t nTargets = f1 == VK_FORMAT_UNDEFINED ? 1 : f2 == VK_FORMAT_UNDEFINED ? 2 : 3;
+    cb.attachmentCount = nTargets; cb.pAttachments = ba;
     VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dy.dynamicStateCount = 2; dy.pDynamicStates = dyn;
-    VkFormat fmts[2] = {f0, f1};
+    VkFormat fmts[3] = {f0, f1, f2};
     VkPipelineRenderingCreateInfo ri = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    ri.colorAttachmentCount = 2; ri.pColorAttachmentFormats = fmts;
+    ri.colorAttachmentCount = nTargets; ri.pColorAttachmentFormats = fmts;
     VkGraphicsPipelineCreateInfo gp = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     gp.pNext = &ri; gp.stageCount = 2; gp.pStages = st; gp.pVertexInputState = &vi; gp.pInputAssemblyState = &ia;
     gp.pViewportState = &vp; gp.pRasterizationState = &rs; gp.pMultisampleState = &ms; gp.pDepthStencilState = &ds;
@@ -235,6 +239,8 @@ VkPipeline Renderer::makeScenePipeline(Pipe p, bool rt) {
 
 void Renderer::destroyTargets() {
     gfx.destroy(sceneColor); gfx.destroy(sceneAux); gfx.destroy(sceneDepth); gfx.destroy(history[0]); gfx.destroy(history[1]);
+    for (Image &b : bloom) gfx.destroy(b);
+    gfx.destroy(directHist[0]); gfx.destroy(directHist[1]);
     gfx.destroy(sceneIndirect); gfx.destroy(sceneLight); gfx.destroy(lightHist[0]); gfx.destroy(lightHist[1]); gfx.destroy(litColor);
 }
 
@@ -249,12 +255,24 @@ void Renderer::createTargets() {
     sceneDepth = gfx.createImage(w, h, kDepthFmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 1, VK_IMAGE_ASPECT_DEPTH_BIT);
     sceneLight = gfx.createImage(w, h, kLightFmt, use);
     sceneIndirect = gfx.createImage(w, h, kLightFmt, use);
+    directHist[0] = gfx.createImage(w, h, kLightFmt, use);
+    directHist[1] = gfx.createImage(w, h, kLightFmt, use);
+    bloom[0] = gfx.createImage(std::max(w / 4, 1u), std::max(h / 4, 1u), kLightFmt, use);
+    bloom[1] = gfx.createImage(std::max(w / 4, 1u), std::max(h / 4, 1u), kLightFmt, use);
+    bloom[2] = gfx.createImage(std::max(w / 16, 1u), std::max(h / 16, 1u), kLightFmt, use);
+    bloom[3] = gfx.createImage(std::max(w / 16, 1u), std::max(h / 16, 1u), kLightFmt, use);
+    if (postPipeFormat != gfx.swapFormat) {
+        if (postPipe) vkDestroyPipeline(gfx.dev, postPipe, nullptr);
+        postPipe = makeFullscreenPipeline(post_frag_spv, sizeof(post_frag_spv), gfx.swapFormat, kAuxFmt);
+        postPipeFormat = gfx.swapFormat;
+    }
     lightHist[0] = gfx.createImage(w, h, kLightFmt, use);
     lightHist[1] = gfx.createImage(w, h, kLightFmt, use);
     litColor = gfx.createImage(w, h, kColorFmt, use);
     lightHistValid = false;
     VkCommandBuffer c = gfx.beginOnce();
-    for (Image *i : {&sceneColor, &sceneAux, &history[0], &history[1], &sceneLight, &sceneIndirect, &lightHist[0], &lightHist[1], &litColor})
+    for (Image *i : {&sceneColor, &sceneAux, &history[0], &history[1], &sceneLight, &sceneIndirect, &lightHist[0], &lightHist[1], &litColor,
+                     &bloom[0], &bloom[1], &bloom[2], &bloom[3], &directHist[0], &directHist[1]})
         transition(c, i->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     transition(c, sceneDepth.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
     gfx.endOnce(c);
@@ -288,8 +306,25 @@ void Renderer::createTargets() {
         VkWriteDescriptorSet wi = w5[0];
         wi.dstBinding = 5; wi.pImageInfo = &ind;
         vkUpdateDescriptorSets(gfx.dev, 1, &wi, 0, nullptr);
-        wi.dstSet = postSet[s];             // unused by the post shader, kept valid
+        VkDescriptorImageInfo dh = {clampSampler, directHist[1 - s].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        wi.dstSet = composeSet[s]; wi.dstBinding = 6; wi.pImageInfo = &dh;
         vkUpdateDescriptorSets(gfx.dev, 1, &wi, 0, nullptr);
+        // post: bloom at bindings 5 and 6
+        VkDescriptorImageInfo bn = {clampSampler, bloom[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo bw = {clampSampler, bloom[2].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        wi.dstSet = postSet[s]; wi.dstBinding = 5; wi.pImageInfo = &bn;
+        vkUpdateDescriptorSets(gfx.dev, 1, &wi, 0, nullptr);
+        wi.dstBinding = 6; wi.pImageInfo = &bw;
+        vkUpdateDescriptorSets(gfx.dev, 1, &wi, 0, nullptr);
+    }
+    {   // bloom chain sources
+        Image *src[5] = {&litColor, &bloom[0], &bloom[1], &bloom[2], &bloom[3]};
+        for (int i = 0; i < 5; i++) {
+            VkDescriptorImageInfo di = {clampSampler, src[i]->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            VkWriteDescriptorSet wb = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            wb.dstSet = bloomSet[i]; wb.dstBinding = 0; wb.descriptorCount = 1; wb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; wb.pImageInfo = &di;
+            vkUpdateDescriptorSets(gfx.dev, 1, &wb, 0, nullptr);
+        }
     }
 }
 
@@ -343,10 +378,12 @@ bool Renderer::ensureWindow() {
     if (pr.right != cr.right || pr.bottom != cr.bottom)
         SetWindowPos(viewWindow, HWND_TOP, 0, 0, pr.right, pr.bottom, SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
     bool wantVsync = settings.vsync != 0 || !sceneValid;
-    if (!gfx.swapchain || gfx.extent.width != (uint32_t)pr.right || gfx.extent.height != (uint32_t)pr.bottom || gfx.vsync != wantVsync) {
+    bool wantHdr = settings.hdr != 0;
+    if (!gfx.swapchain || gfx.extent.width != (uint32_t)pr.right || gfx.extent.height != (uint32_t)pr.bottom || gfx.vsync != wantVsync ||
+        gfx.hdrWanted != wantHdr) {
         if (pr.right <= 0 || pr.bottom <= 0) return false;
         if (frameInFlight) { vkWaitForFences(gfx.dev, 1, &fence, VK_TRUE, UINT64_MAX); frameInFlight = false; }
-        if (!gfx.createSwapchain(viewWindow, wantVsync)) return false;
+        if (!gfx.createSwapchain(viewWindow, wantVsync, wantHdr)) return false;
         createTargets();
     }
     return gfx.swapchain != VK_NULL_HANDLE;
@@ -1109,8 +1146,13 @@ void Renderer::buildScene(const lr::SceneCmd &sc) {
     f.skyColor[2] = settings.fogEnable != 0 ? f.fogColor[2] : 0.32f;
     f.viewport[0] = sceneViewport.x; f.viewport[1] = sceneViewport.y; f.viewport[2] = sceneViewport.width; f.viewport[3] = sceneViewport.height;
     f.mat[0] = rtOn ? settings.bump : 0.0f; f.mat[1] = settings.specular;
+    modernLook = rtOn && settings.look != 0 && settings.debugView == 0;
+    f.mat[2] = modernLook ? 1.0f : 0.0f;
     f.gi[0] = (rtOn && settings.rtGI != 0 && lampGrid.count) ? 1.0f : 0.0f;
-    f.gi[1] = settings.giIndirect; f.gi[2] = settings.giDirect > 0 ? settings.giDirect : 1.0f; f.gi[3] = 6.0f;
+    f.gi[1] = settings.giIndirect; f.gi[2] = settings.giDirect > 0 ? settings.giDirect : 1.0f; f.gi[3] = std::max(settings.shadowSoftness, 0.0f);
+    // light shafts: stronger where the level itself is foggy
+    f.vol[0] = (rtOn && settings.rtGI != 0 && lampGrid.count) ? settings.volumetric * 0.0004f * (settings.fogEnable != 0 ? 2.5f : 1.0f) : 0.0f;
+    f.vol[1] = 1600.0f;
     f.skyEye[0] = skyEye.x; f.skyEye[1] = skyEye.y; f.skyEye[2] = skyEye.z;
     f.ambient[0] = levelAmbient[0]; f.ambient[1] = levelAmbient[1]; f.ambient[2] = levelAmbient[2];
     f.ambient[3] = (rtOn && settings.rtShadows != 0 && lampGrid.count) ? 1.0f : 0.0f;
@@ -1299,29 +1341,34 @@ void Renderer::renderFrame(bool hadScene) {
         transition(cmd, sceneDepth.img, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
 
         // ---- 2. lighting resolve: filter + accumulate the ray-traced light, compose with the albedo, fog
-        toAttachment(litColor); toAttachment(lightHist[lh]);
+        toAttachment(litColor); toAttachment(lightHist[lh]); toAttachment(directHist[lh]);
         {
-            VkRenderingAttachmentInfo ca[2] = {{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}};
-            ca[0].imageView = litColor.view; ca[1].imageView = lightHist[lh].view;
-            for (int i = 0; i < 2; i++) { ca[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE; }
+            VkRenderingAttachmentInfo ca[3] = {{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO},
+                                               {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}};
+            ca[0].imageView = litColor.view; ca[1].imageView = lightHist[lh].view; ca[2].imageView = directHist[lh].view;
+            for (int i = 0; i < 3; i++) { ca[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE; }
             VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO};
-            ri.renderArea = fullRect; ri.layerCount = 1; ri.colorAttachmentCount = 2; ri.pColorAttachments = ca;
+            ri.renderArea = fullRect; ri.layerCount = 1; ri.colorAttachmentCount = 3; ri.pColorAttachments = ca;
             vkCmdBeginRendering(cmd, &ri);
             VkViewport vp = {0, 0, (float)gfx.extent.width, (float)gfx.extent.height, 0, 1};
             vkCmdSetViewport(cmd, 0, 1, &vp); vkCmdSetScissor(cmd, 0, 1, &fullRect);
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, composePipe);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, postPL, 0, 1, &composeSet[lh], 0, nullptr);
             float hw = settings.giHistory > 0 && settings.giHistory < 0.99f ? settings.giHistory : 0.9f;
-            float pc[16] = {frameData.fogColor[0], frameData.fogColor[1], frameData.fogColor[2], frameData.fogColor[3],
+            float pc[24] = {frameData.fogColor[0], frameData.fogColor[1], frameData.fogColor[2], frameData.fogColor[3],
                             settings.fogNearZ, settings.fogFarZ, nearZ, farZ,
                             lightHistValid ? 1.0f : 0.0f, hw, tanX, tanY,
                             sceneViewport.x / gfx.extent.width, sceneViewport.y / gfx.extent.height, sceneViewport.width / gfx.extent.width,
-                            sceneViewport.height / gfx.extent.height};
-            vkCmdPushConstants(cmd, postPL, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 64, pc);
+                            sceneViewport.height / gfx.extent.height,
+                            modernLook ? 1.0f : 0.0f, modernLook ? 6.0f : 1.0f, settings.shadowSoftness > 0 ? 0.8f : 0.0f, 0,
+                            // in-scattered light takes the level's fog colour when it has fog, a warm white otherwise
+                            settings.fogEnable != 0 ? frameData.fogColor[0] * 0.6f + 0.4f : 1.0f, settings.fogEnable != 0 ? frameData.fogColor[1] * 0.6f + 0.4f : 0.95f,
+                            settings.fogEnable != 0 ? frameData.fogColor[2] * 0.6f + 0.4f : 0.85f, 0};
+            vkCmdPushConstants(cmd, postPL, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 96, pc);
             vkCmdDraw(cmd, 3, 1, 0, 0);
             vkCmdEndRendering(cmd);
         }
-        toSampled(lightHist[lh]);
+        toSampled(lightHist[lh]); toSampled(directHist[lh]);
         lightHistValid = true;
 
         // ---- 3. translucent pass over the resolved scene (depth tested, never written to aux / light)
@@ -1332,6 +1379,33 @@ void Renderer::renderFrame(bool hadScene) {
         vkCmdEndRendering(cmd);
         toSampled(litColor); toSampled(sceneAux); toSampled(sceneLight); toSampled(sceneIndirect);
         transition(cmd, sceneDepth.img, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+        // ---- 4. bloom (modern look): bright parts of the HDR scene, blurred at 1/4 and 1/16 resolution
+        if (modernLook && settings.bloom > 0) {
+            auto bloomPass = [&](int srcSet, Image &dst, float mode) {
+                toAttachment(dst);
+                VkRenderingAttachmentInfo ca = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+                ca.imageView = dst.view; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                ca.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                VkRect2D area = {{0, 0}, {dst.width, dst.height}};
+                VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO};
+                ri.renderArea = area; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
+                vkCmdBeginRendering(cmd, &ri);
+                VkViewport vp = {0, 0, (float)dst.width, (float)dst.height, 0, 1};
+                vkCmdSetViewport(cmd, 0, 1, &vp); vkCmdSetScissor(cmd, 0, 1, &area);
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipe);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, postPL, 0, 1, &bloomSet[srcSet], 0, nullptr);
+                float pc[24] = {mode, 1.0f};
+                vkCmdPushConstants(cmd, postPL, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 96, pc);
+                vkCmdDraw(cmd, 3, 1, 0, 0);
+                vkCmdEndRendering(cmd);
+                toSampled(dst);
+            };
+            bloomPass(0, bloom[0], 0);      // lit -> 1/4, thresholded
+            bloomPass(1, bloom[1], 1); bloomPass(2, bloom[0], 2);
+            bloomPass(1, bloom[2], 3);      // 1/4 -> 1/16
+            bloomPass(3, bloom[3], 1); bloomPass(4, bloom[2], 2);
+        }
     } else
         lightHistValid = false;
 
@@ -1353,12 +1427,14 @@ void Renderer::renderFrame(bool hadScene) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, postPipe);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, postPL, 0, 1, &postSet[h], 0, nullptr);
         float sx = (float)gfx.extent.width / modeW, sy = (float)gfx.extent.height / modeH, s = std::min(sx, sy);
-        float pc[16] = {(gfx.extent.width - modeW * s) * 0.5f / gfx.extent.width, (gfx.extent.height - modeH * s) * 0.5f / gfx.extent.height,
+        bool look = modernLook && drawScene;
+        float pc[24] = {(gfx.extent.width - modeW * s) * 0.5f / gfx.extent.width, (gfx.extent.height - modeH * s) * 0.5f / gfx.extent.height,
                         modeW * s / gfx.extent.width, modeH * s / gfx.extent.height,
                         lightAdd[0], lightAdd[1], lightAdd[2], drawScene ? 1.0f : 0.0f,
                         (rtOn && settings.rtAO != 0) ? 1.0f : 0.0f, historyValid ? 1.0f : 0.0f, nearZ, farZ,
-                        settings.exposure > 0 ? settings.exposure : 1.0f, settings.debugView, overlayEmpty ? 0.0f : 1.0f, 0};
-        vkCmdPushConstants(cmd, postPL, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 64, pc);
+                        (settings.exposure > 0 ? settings.exposure : 1.0f) * (look ? 1.35f : 1.0f), settings.debugView, overlayEmpty ? 0.0f : 1.0f, 0,
+                        look ? 1.0f : 0.0f, (look && settings.bloom > 0) ? settings.bloom * 0.35f : 0.0f, gfx.hdrOutput ? 1.0f : 0.0f, 200.0f};
+        vkCmdPushConstants(cmd, postPL, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 96, pc);
         vkCmdDraw(cmd, 3, 1, 0, 0);
         vkCmdEndRendering(cmd);
     }
@@ -1411,6 +1487,12 @@ void Renderer::saveScreenshot() {
     std::vector<uint8_t> rgb((size_t)w * h * 3);
     const uint8_t *src = (const uint8_t *)shotBuf.mapped;
     bool bgr = gfx.swapFormat == VK_FORMAT_B8G8R8A8_UNORM || gfx.swapFormat == VK_FORMAT_B8G8R8A8_SRGB;
+    if (gfx.swapFormat == VK_FORMAT_A2B10G10R10_UNORM_PACK32) {
+        const uint32_t *p = (const uint32_t *)src;      // an HDR10 image is saved as its PQ code values (dark in a viewer)
+        for (size_t i = 0; i < (size_t)w * h; i++) {
+            rgb[i * 3] = (uint8_t)((p[i] & 1023) >> 2); rgb[i * 3 + 1] = (uint8_t)(((p[i] >> 10) & 1023) >> 2); rgb[i * 3 + 2] = (uint8_t)(((p[i] >> 20) & 1023) >> 2);
+        }
+    } else
     for (size_t i = 0; i < (size_t)w * h; i++) {
         rgb[i * 3] = src[i * 4 + (bgr ? 2 : 0)]; rgb[i * 3 + 1] = src[i * 4 + 1]; rgb[i * 3 + 2] = src[i * 4 + (bgr ? 0 : 2)];
     }

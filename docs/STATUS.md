@@ -56,6 +56,9 @@ Last updated 2026-11-16 (first session, with the user playing the game during th
 
 * Mode switch from the options menu.
 * Polygrids (water) and their reflections, particle systems, line systems, glow/bias/no-Z sprites, fog.
+* The modern look (HDR float pipeline, 10-bit output, bloom, filmic tone mapping), soft area-light shadows and
+  volumetric light: seen in scripted captures of the train level only; not yet judged by the user, HDR10 output
+  (`lr_HDR 1`) never run, 4K cost unmeasured.
 * Generated normal maps and keyword specular (seen working in the train level's light buffer; look and strength not
   yet judged by the user). Polygrid normals from real grid spacing (no water seen yet).
 * Chrome models reflecting by `1 - alpha` and the removal of the model alpha test (the view pistol showed see-through

@@ -212,11 +212,15 @@ vec3 lampDirect(vec3 p, vec3 n, vec3 origin, uint wantFlags, int maxRays, vec3 v
         if (ndl <= 0.0) continue;
         // The level was lit for a bake WITHOUT a cosine term (a lamp lights every surface facing it equally). Pure
         // Lambert makes walls much darker than the designers saw; half-way keeps their balance and still reads as form.
-        ndl = 0.5 + 0.5 * ndl;
-        if (luma(c) * ndl < 0.01) continue;
+        if (frame.mat.z > 0.5) c *= (1.0 - d / l.posRadius.w) * 2.6;      // modern look: true Lambert, light concentrated near the lamp
+        else ndl = 0.5 + 0.5 * ndl;
+        if (luma(c) * ndl < 0.004) continue;
         float vis = 1.0;
         if (rays < maxRays) {
-            vis = traceMasked(origin, to / d, max(d - 2.0, 0.0), 0xffu);
+            // a small spherical lamp: sharp at contact, softer with distance from the caster (accumulated by the resolve)
+            vec3 target = to + rndSphere() * frame.gi.w;
+            float td = length(target);
+            vis = traceMasked(origin, target / td, max(td - 2.0, 0.0), 0xffu);
             rays++;
         }
         sum += c * ndl * vis;
@@ -232,7 +236,8 @@ vec3 bounceRadiance(vec3 origin, vec3 dir) {
     rayQueryEXT rq;
     rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0x07, origin, 0.25, dir, 4000.0);
     while (rayQueryProceedEXT(rq)) {}
-    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) return frame.skyColor.rgb;
+    bool lin = frame.mat.z > 0.5;
+    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) return lin ? pow(frame.skyColor.rgb, vec3(2.2)) : frame.skyColor.rgb;
     uint ci = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
     uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
     vec2 bc = rayQueryGetIntersectionBarycentricsEXT(rq, true);
@@ -268,7 +273,30 @@ vec3 bounceRadiance(vec3 origin, vec3 dir) {
         if (ndl > 0.0 && luma(c) > 0.01)
             irr += min(c * (0.5 + 0.5 * ndl) * float(count), vec3(3.0)) * traceMasked(hp + hn * 0.75, to / d, max(d - 2.0, 0.0), 0x07u) * frame.gi.z;
     }
+    if (lin) return pow(tx.rgb, vec3(2.2)) * mix(irr * frame.lightScale.rgb * 1.3, vec3(6.0), emissive);
     return tx.rgb * mix(irr * frame.lightScale.rgb * frame.lightScale.a, vec3(1.5), emissive);
+}
+
+// Light scattered towards the eye by the air between the camera and the surface: a few jittered steps along the view
+// ray, one randomly chosen lamp with a shadow ray at each. Monochrome (the resolve tints it), filtered with the bounce.
+float inScatter(vec3 eye, vec3 surf) {
+    vec3 d = surf - eye;
+    float len = min(length(d), frame.vol.y);
+    vec3 dir = normalize(d);
+    const int K = 4;
+    float stepLen = len / float(K), s = 0.0;
+    for (int i = 0; i < K; i++) {
+        vec3 p = eye + dir * (float(i) + rnd()) * stepLen;
+        uint b, e;
+        if (!lampCell(p, b, e)) continue;
+        uint count = e - b;
+        Lamp l = lamps[lampData[b + min(uint(rnd() * float(count)), count - 1u)]];
+        vec3 to; float dd;
+        float lc = luma(lampAt(l, p, to, dd));
+        if (lc < 0.02) continue;
+        s += min(lc * float(count), 4.0) * traceMasked(p, to / dd, max(dd - 2.0, 0.0), 0x07u) * stepLen;
+    }
+    return s * frame.vol.x;
 }
 
 // Classic shading of whatever a ray hit (no recursion): albedo x baked light.
@@ -440,6 +468,7 @@ void main() {
     // ---- full ray-traced lighting: lamps and one bounce replace the baked light of opaque world and model surfaces
     bool composed = false;
     vec3 bounceOut = vec3(0.0), specOut = vec3(0.0);
+    float scatterOut = 0.0;
 #ifdef RT
     {
         bool surfWorld = world && (I.flags & (I_PRELIT | I_SKY | I_BLEND)) == 0u && (sflags & SURF_BRIGHT) == 0u;
@@ -453,15 +482,21 @@ void main() {
             vec3 direct = lampDirect(vWorld, nb, o, surfModel ? 3u : 1u, 8, v, max(texInfo[tex].shininess, 4.0), spec);
             specOut = spec * texInfo[tex].spec * frame.mat.y * frame.lightScale.rgb;
             vec3 bounce = bounceRadiance(o, cosineDir(geoN, vec2(rnd(), rnd()))) * frame.gi.y;
-            vec3 scale = frame.lightScale.rgb * frame.lightScale.a;
+            bool lookNow = frame.mat.z > 0.5;
+            vec3 scale = lookNow ? frame.lightScale.rgb * 1.3 : frame.lightScale.rgb * frame.lightScale.a;
             // keep only the dynamic-light part of the classic term: the baked part is what the rays replace
             // direct light stays sharp (never filtered); the bounce goes to its own buffer for the resolve to denoise
-            light = (surfModel ? I.color.rgb : frame.ambient.rgb * 0.5 * scale) + direct * scale + dynLight;
+            // modern look: a small ambient floor only; the bounce light does the filling
+            light = (surfModel ? I.color.rgb * (lookNow ? 0.6 : 1.0) : frame.ambient.rgb * (lookNow ? 0.16 : 0.5) * scale) + direct * scale + dynLight;
             bounceOut = bounce;
+            if (frame.vol.x > 0.0) scatterOut = inScatter(frame.camPos.xyz, vWorld);
         }
     }
 #endif
-    vec3 color = tx.rgb * light + specOut;
+    bool look = frame.mat.z > 0.5;
+    // composed pixels are lit in linear light in the modern look; everything else is converted when written
+    vec3 alb = (look && composed) ? pow(tx.rgb, vec3(2.2)) : tx.rgb;
+    vec3 color = alb * light + specOut;
     // the texture's fullbright layer; in the composed path the resolve applies it, so it bypasses the light filter
     float fbMask = ((tflags & T_FULLBRIGHT) != 0u && !alphaOpacity) ? tx.a : 0.0;
     if (!composed) color = mix(color, tx.rgb, fbMask);
@@ -495,6 +530,7 @@ void main() {
             vec3 rdir = reflect(-v, normalize(mix(geoN, nb, 0.6)));
             if (dot(rdir, geoN) < 0.02) rdir = reflect(-v, geoN);
             vec3 rcol = traceRadiance(origin, rdir, 6000.0);
+            if (look && composed) rcol = pow(rcol, vec3(2.2));
             color = mix(color, rcol, clamp(fres * frame.rt.z, 0.0, 1.0));
         }
     }
@@ -537,11 +573,17 @@ void main() {
     if (composed && dbg != 0 && dbg != 2) composed = false;
     if (composed) {
         // the resolve multiplies the filtered light back onto the albedo: store colour / albedo as the light
-        vec3 albedo = dbg == 2 ? vec3(1.0) : max(tx.rgb, vec3(0.04));
+        vec3 albedo = dbg == 2 ? vec3(1.0) : (look ? max(alb, vec3(0.004)) : max(tx.rgb, vec3(0.04)));
         outColor = vec4(albedo, dbg == 2 ? 0.0 : fbMask);
         outLight = vec4((dbg == 2 ? light : color) / (dbg == 2 ? vec3(1.0) : albedo), 1.0);
-        outIndirect = vec4(bounceOut, 1.0);
+        outIndirect = vec4(bounceOut, 1.0 + scatterOut);        // a >= 1 marks a composed pixel; the excess is in-scattered light
     } else {
+        if (look) {
+            // display-referred result -> linear; things that glow get room above white so they bloom
+            float glow = 1.0 + 4.0 * fbMask + ((sflags & SURF_BRIGHT) != 0u ? 3.0 : 0.0) +
+                         (((I.flags & I_UNLIT) != 0u && (I.flags & (I_SKY | I_WATER)) == 0u) ? 1.0 : 0.0);
+            color = pow(max(color, vec3(0.0)), vec3(2.2)) * glow;
+        }
         outColor = vec4(color, alpha);
         outLight = vec4(0.0);
         outIndirect = vec4(0.0);

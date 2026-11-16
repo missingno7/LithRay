@@ -11,7 +11,7 @@
 namespace lr {
 
 constexpr uint32_t kMagic = 0x5941524c;      // 'LRAY'
-constexpr uint32_t kVersion = 10;
+constexpr uint32_t kVersion = 12;
 constexpr uint32_t kHeaderSize = 4096;
 constexpr uint32_t kArenaSize = 64u << 20;
 
@@ -167,7 +167,9 @@ struct Settings {
     float giDirect, giIndirect, giHistory;      // full ray-traced lighting: lamp scale, bounce scale, history weight
     float giEmissive;                           // strength of light emitted by bright surfaces and fullbright texels
     float bump, specular;                       // invented materials: generated normal-map strength, highlight strength
-    float reserved[6];
+    float look, bloom, hdr;                     // 1 = modern look (linear HDR, tone mapped); bloom strength; HDR10 output
+    float shadowSoftness, volumetric;           // lamp radius in world units (0 = hard shadows); light-shaft strength
+    float reserved[1];
 };
 
 struct SceneCmd {

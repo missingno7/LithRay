@@ -22,7 +22,8 @@ $shaders = @(
     @{ src = "scene.frag"; name = "scene_rt_frag_spv"; defs = @("-DRT") },
     @{ src = "post.vert"; name = "post_vert_spv"; defs = @() },
     @{ src = "post.frag"; name = "post_frag_spv"; defs = @() },
-    @{ src = "compose.frag"; name = "compose_frag_spv"; defs = @() }
+    @{ src = "compose.frag"; name = "compose_frag_spv"; defs = @() },
+    @{ src = "bloom.frag"; name = "bloom_frag_spv"; defs = @() }
 )
 $newest = (Get-ChildItem "$root\shaders" | Sort-Object LastWriteTime | Select-Object -Last 1).LastWriteTime
 $include = ""

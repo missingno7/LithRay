@@ -45,10 +45,12 @@ struct Gfx {
     std::vector<VkImage> swapImages;
     std::vector<VkImageView> swapViews;
     bool vsync = true;
+    bool hdrOutput = false;         // the swapchain is HDR10 (ST.2084, Rec.2020)
+    bool hdrWanted = false, hdrAvailable = false;
 
     void init();
     void shutdown();
-    bool createSwapchain(HWND hwnd, bool vsyncOn);     // (re)creates; false while the window has no area
+    bool createSwapchain(HWND hwnd, bool vsyncOn, bool wantHdr = false);     // (re)creates; false while the window has no area
     void destroySwapchain(bool surfaceToo);
 
     Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible);

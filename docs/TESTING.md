@@ -80,6 +80,11 @@ Saved to `autoexec.cfg` like any engine variable.
 | `lr_RTAO` | 1 | ray-traced ambient occlusion (lightmap mode) |
 | `lr_RTGI` | 1 | 1 = full ray-traced lighting (lamps + bounce + emitters, no lightmaps); 0 = lightmaps with ray-traced shadows |
 | `lr_GIDirect` / `lr_GIIndirect` / `lr_GIEmissive` | 1 / 1.3 / 1 | strength of lamps, bounce light and emitters |
+| `lr_Look` | 1 | 1 = modern look (linear HDR lighting, bloom, filmic tone mapping); 0 = faithful |
+| `lr_Bloom` / `lr_Exposure` | 1 / 1 | bloom strength / exposure multiplier |
+| `lr_HDR` | 0 | 1 = HDR10 output when the display offers it (the host log says whether it does) |
+| `lr_ShadowSoftness` | 3 | lamp radius in world units; 0 = hard shadows |
+| `lr_Volumetric` | 1 | strength of light scattered in the air |
 | `lr_Bump` / `lr_Specular` | 1 / 1 | strength of the generated normal maps / highlights (invented materials) |
 | `lr_GIHistory` | 0.9 | weight of the accumulated lighting history (lower = less lag, more noise) |
 | `lr_VSync` | 1 | FIFO, else mailbox / immediate |
