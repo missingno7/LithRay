@@ -159,7 +159,7 @@ private:
     float lampCalibration = 1.0f;
     std::vector<EmitPoly> emitPolys;
     size_t fileLampCount = 0; bool emittersBuilt = false; float emittersStrength = -1;
-    struct TexStats { float avg[3], fbAvg[3], fbCoverage; };
+    struct TexStats { float avg[3], fbAvg[3], fbCoverage; float softAlpha; };    // softAlpha: share of texels with partial alpha
     std::vector<TexStats> texStats;
     float levelAmbient[3] = {};
     V3 worldMin, worldMax;

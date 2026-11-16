@@ -477,14 +477,16 @@ void Renderer::onTexUpload(const lr::TexUploadCmd &c, const uint8_t *p) {
     {   // what the texture shows on average, and what its fullbright texels show (for emitters)
         if (texStats.size() < kMaxTextures) texStats.resize(kMaxTextures);
         TexStats ts = {};
-        uint32_t n0 = c.width * c.height, nfb = 0;
+        uint32_t n0 = c.width * c.height, nfb = 0, nSoft = 0;
         double sum[3] = {}, fb[3] = {};
         const uint8_t *idx0 = pal + 1024;
         for (uint32_t i = 0; i < n0; i++) {
             const uint8_t *o = &px[(size_t)i * 4];
             for (int k = 0; k < 3; k++) sum[k] += o[k];
             if (fullbright && !alphaMask && idx0[i] >= 246) { for (int k = 0; k < 3; k++) fb[k] += o[k]; nfb++; }
+            if (alphaMask && o[3] > 24 && o[3] < 232) nSoft++;
         }
+        ts.softAlpha = (float)nSoft / n0;
         for (int k = 0; k < 3; k++) { ts.avg[k] = (float)(sum[k] / (255.0 * n0)); ts.fbAvg[k] = nfb ? (float)(fb[k] / (255.0 * nfb)) : 0; }
         ts.fbCoverage = (float)nfb / n0;
         texStats[c.id] = ts;
@@ -526,7 +528,7 @@ void Renderer::onTexUpload(const lr::TexUploadCmd &c, const uint8_t *p) {
                       (sat < 0.12f && smooth > 0.6f && mx > 0.15f && mx < 0.7f));
         if (matte) { ti.flags |= T_MATTE; ti.spec = std::min(ti.spec, 0.04f); ti.gloss = 0; }
         if (metal) { ti.flags |= T_METAL; ti.spec = std::max(ti.spec, 0.55f); ti.shininess = std::max(ti.shininess, 36.0f); ti.gloss = std::max(ti.gloss, 0.3f); }
-        Log("tex %u %s %ux%u noise %.3f smooth %.2f sat %.2f avg %.2f%s%s -> spec %.2f shin %.0f gloss %.2f", c.id, c.name, c.width, c.height, noise, smooth, sat, mx,
+        Log("tex %u %s %ux%u noise %.3f smooth %.2f sat %.2f avg %.2f softA %.2f%s%s -> spec %.2f shin %.0f gloss %.2f", c.id, c.name, c.width, c.height, noise, smooth, sat, mx, st.softAlpha,
             metal ? " METAL" : "", matte ? " MATTE" : "", ti.spec, ti.shininess, ti.gloss);
     }
     // ---- generated normal map: the texture's luminance as a height field (slightly smoothed), central differences
@@ -992,11 +994,17 @@ void Renderer::addObject(const lr::SceneCmd &sc, const lr::ObjectRecord &o) {
         // depth they sort correctly against everything -- the original blends them in list order, so a far one can cover
         // a near one -- and they go through the same ray-traced lighting as solid geometry. Plain glass stays blended,
         // sorted far to near.
-        bool masked = false;
+        // A cut-out's mask is all-or-nothing; glass has partial alpha across its texels and must stay blended (alpha
+        // testing it at 50% would discard the whole pane).
+        bool masked = false, hardMask = true;
         if (translucent && !sky)
-            for (uint32_t si = b.firstSurface; si < b.firstSurface + b.nSurfaces && si < surfaces.size() && !masked; si++)
-                masked = (texInfoCpu[surfaces[si].tex < kMaxTextures ? surfaces[si].tex : 0].flags & T_ALPHA) != 0;
-        bool cutout = masked && o.rgba[3] >= 250;
+            for (uint32_t si = b.firstSurface; si < b.firstSurface + b.nSurfaces && si < surfaces.size(); si++) {
+                uint32_t t = surfaces[si].tex < kMaxTextures ? surfaces[si].tex : 0;
+                if (!(texInfoCpu[t].flags & T_ALPHA)) continue;
+                masked = true;
+                if (t < texStats.size() && texStats[t].softAlpha > 0.15f) hardMask = false;
+            }
+        bool cutout = masked && hardMask && o.rgba[3] >= 250;
         gi.firstIndex = b.firstIndex; gi.triBase = b.triBase;
         // sky: always front faces only (seen from the sky camera), even when translucent (d3d.ren 0x1b9c0)
         gi.flags = I_WORLD | (sky ? (I_SKY | I_PRELIT) : 0) |
@@ -1011,7 +1019,7 @@ void Renderer::addObject(const lr::SceneCmd &sc, const lr::ObjectRecord &o) {
         if (gfx.rt && !sky && (!translucent || masked) && b.blas.as && tlasInstances.size() < kMaxTlas) {
             VkAccelerationStructureInstanceKHR ti = {};
             memcpy(ti.transform.matrix, xf.m, 48);
-            ti.instanceCustomIndex = inst; ti.mask = translucent ? 0x08 : 0x04; ti.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+            ti.instanceCustomIndex = inst; ti.mask = translucent ? 0x08 : 0x04;     // (glass never passes the rays' 50% alpha test: no shadow) ti.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
             ti.accelerationStructureReference = b.blas.addr;
             tlasInstances.push_back(ti);
         }
