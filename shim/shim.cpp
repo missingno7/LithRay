@@ -87,29 +87,33 @@ static void RemoveFocusFilter() {
 
 // Server.dll and CLIENT.EXE floor the frame time at 0.01 s, so the game runs fast above 100 fps. Blood II 2.1
 // only: both instructions are verified to reference the constant before 0.001 is written over it.
-static bool PatchFrameTimeFloor(const char *module, uint32_t constRva, const uint32_t operandRvas[2]) {
+// Result: 1 applied (or already applied), 0 this is not the expected build, 2 the module is not loaded.
+static int PatchFrameTimeFloor(const char *module, uint32_t constRva, const uint32_t operandRvas[2]) {
     uint8_t *base = (uint8_t *)GetModuleHandleA(module);
-    if (!base) return false;
+    if (!base) return 2;
     float *value = (float *)(base + constRva);
     __try {
         for (int i = 0; i < 2; i++)
-            if (*(uint32_t *)(base + operandRvas[i]) != (uint32_t)(uintptr_t)value) return false;
-        if (*value != 0.01f) return *value == 0.001f;
+            if (*(uint32_t *)(base + operandRvas[i]) != (uint32_t)(uintptr_t)value) return 0;
+        if (*value == 0.001f) return 1;
+        if (*value != 0.01f) return 0;
         DWORD old;
-        if (!VirtualProtect(value, 4, PAGE_READWRITE, &old)) return false;
+        if (!VirtualProtect(value, 4, PAGE_READWRITE, &old)) return 0;
         *value = 0.001f;
         VirtualProtect(value, 4, old, &old);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 static bool g_speedFixed, g_speedWanted;
-// server.dll is loaded when a game starts, long after Init: keep trying until both floors are patched.
+// The server code exists twice: in CLIENT.EXE (single player runs it in-process) and in Server.dll, which is only
+// loaded for a dedicated / remote setup and may appear later. A module that is not loaded is not a failure.
 static void TryGameSpeedFix(bool log) {
-    if (!g_speedWanted || g_speedFixed) return;
+    if (!g_speedWanted) return;
     static const uint32_t clientOps[2] = {0x564a7, 0x564c4}, serverOps[2] = {0x26df1, 0x26e07};
-    bool a = PatchFrameTimeFloor(nullptr, 0x80068, clientOps), b = PatchFrameTimeFloor("server.dll", 0x42ba8, serverOps);
-    g_speedFixed = a && b;
-    if (log || g_speedFixed) bridge::Log("game speed fix: client %d server %d%s", a, b, g_speedFixed ? "" : " (frame rate capped at 100 until both apply)");
+    int a = PatchFrameTimeFloor(nullptr, 0x80068, clientOps), b = PatchFrameTimeFloor("server.dll", 0x42ba8, serverOps);
+    bool ok = a == 1 && b != 0;
+    if (log || ok != g_speedFixed) bridge::Log("game speed fix: client %d server %d (1 applied, 2 not loaded, 0 unexpected build)%s", a, b, ok ? "" : ": capped at 100 fps");
+    g_speedFixed = ok;
 }
 
 // ------------------------------------------------------------------ console options
@@ -483,7 +487,7 @@ static DWORD g_lastSwap;
 static void SwapBuffersSlot() {
     UpdateCursorCapture();
     static DWORD lastTry;
-    if (!g_speedFixed && g_speedWanted && timeGetTime() - lastTry > 500) { lastTry = timeGetTime(); TryGameSpeedFix(false); }
+    if (g_speedWanted && timeGetTime() - lastTry > 1000) { lastTry = timeGetTime(); TryGameSpeedFix(false); }
     RunScript();
     SendOverlay();
     auto *p = bridge::Emit<lr::PresentCmd>(lr::CmdPresent);

@@ -216,11 +216,15 @@ static M34 Mul(const M34 &a, const M34 &b) {
     }
     return r;
 }
+// d3d.ren's quat-to-matrix (0x3e1d0) divides by |q|^2: key quaternions are not unit length, and the slerp result is
+// not renormalised either. Assuming unit quaternions scales every bone and explodes the skeleton down the hierarchy.
 static M34 QuatToM(const float q[4]) {
     float x = q[0], y = q[1], z = q[2], w = q[3];
-    M34 r = {{{1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w), 0},
-              {2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w), 0},
-              {2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y), 0}}};
+    float n = x * x + y * y + z * z + w * w;
+    float s = n > 1e-12f ? 2.0f / n : 0.0f;
+    M34 r = {{{1 - s * (y * y + z * z), s * (x * y - z * w), s * (x * z + y * w), 0},
+              {s * (x * y + z * w), 1 - s * (x * x + z * z), s * (y * z - x * w), 0},
+              {s * (x * z - y * w), s * (y * z + x * w), 1 - s * (x * x + y * y), 0}}};
     return r;
 }
 static void Slerp(const float *a, const float *bIn, float t, float *out) {
@@ -343,6 +347,18 @@ static void EmitModel(LT1DObject *o, uint8_t role) {
     Pose pose{tr.m_KeyA.m_iKey, tr.m_KeyB.m_iKey, t, g_pose.data(), nNodes};
     pose.Node(&animA->m_RootNode, &animB->m_RootNode, identity, 0);
     bool deform = BlendVertexAnimation(model, animA, animB, tr.m_KeyA.m_iKey, tr.m_KeyB.m_iKey, t);
+    {   // diagnostics: a pose that leaves the model's neighbourhood, or a bracket outside its animation
+        bool bad = tr.m_KeyA.m_iKey >= animA->m_nKeyFrames || tr.m_KeyB.m_iKey >= animB->m_nKeyFrames || !(t >= -0.01f && t <= 1.01f);
+        for (uint32_t i = 0; i < nNodes && !bad; i++)
+            for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) { float v = g_pose[i].m[r][c]; if (!(v > -20000.0f && v < 20000.0f)) bad = true; }
+        static int reports;
+        if (bad && reports < 40) {
+            reports++;
+            bridge::Log("BAD POSE %s obj %p: keyA %u/%u keyB %u/%u t %g interpMS %u trackerFlags %x animA %p animB %p nodes %u",
+                        model->m_pFilename ? model->m_pFilename : "?", o, tr.m_KeyA.m_iKey, animA->m_nKeyFrames, tr.m_KeyB.m_iKey, animB->m_nKeyFrames,
+                        t, tr.m_InterpolationMS, tr.m_Flags, animA, animB, nNodes);
+        }
+    }
 
     // Ambient as d3d.ren's model frame state builds it, then the game's model hook (once per model per scene).
     // Dynamic lights are added by the host per pixel instead of into this ambient term.

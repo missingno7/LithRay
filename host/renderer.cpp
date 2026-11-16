@@ -593,7 +593,7 @@ void Renderer::logOnce(uint32_t key, const char *fmt, ...) {
 // ------------------------------------------------------------------ frame building
 uint32_t Renderer::pushInstance(const GInstance &i) {
     if (instances.size() >= kMaxInstances) return 0;
-    instances.push_back(i);
+    instances.push_back(i); instOwner.push_back(curOwner);
     return (uint32_t)instances.size() - 1;
 }
 void Renderer::pushDraw(Group g, Pipe p, uint32_t instance, uint32_t firstIndex, uint32_t indexCount, uint8_t view) {
@@ -742,6 +742,7 @@ void Renderer::addModel(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const
 
 void Renderer::addObject(const lr::SceneCmd &sc, const lr::ObjectRecord &o) {
     const uint8_t *payload = (const uint8_t *)(&o + 1);
+    curOwner = ((uint64_t)o.type << 32) | o.key;
     switch (o.type) {
     case lr::OT_MODEL: addModel(sc, o, payload); break;
     case lr::OT_WORLDMODEL: case lr::OT_CONTAINER: {
@@ -820,7 +821,8 @@ void Renderer::buildScene(const lr::SceneCmd &sc) {
     settings = sc.settings;
     instances.clear(); draws.clear(); lights.clear(); tlasInstances.clear(); casterTris.clear();
     dynHalf ^= 1; dynVerts = dynIndices = 0; rtDynTris = 0;
-    instances.push_back(GInstance{});      // index 0: unused
+    instOwner.clear(); curOwner = 0;
+    instances.push_back(GInstance{}); instOwner.push_back(0);     // index 0: unused
 
     // ---- polled world state
     const uint8_t *p = (const uint8_t *)(&sc + 1);
@@ -1174,7 +1176,13 @@ void Renderer::saveScreenshot() {
         rgb[i * 3] = src[i * 4 + (bgr ? 2 : 0)]; rgb[i * 3 + 1] = src[i * 4 + 1]; rgb[i * 3 + 2] = src[i * 4 + (bgr ? 0 : 2)];
     }
     bool ok = shotFormat == 1 ? WritePng(shotPath.c_str(), w, h, rgb.data()) : WriteBmp(shotPath.c_str(), w, h, rgb.data());
-    Log("screenshot %s: %s", shotPath.c_str(), ok ? "written" : "FAILED");
+    Log("screenshot %s: %s | cam %.1f,%.1f,%.1f fwd %.2f,%.2f,%.2f | %zu draws", shotPath.c_str(), ok ? "written" : "FAILED", camPos.x, camPos.y, camPos.z, camFwd.x, camFwd.y, camFwd.z, draws.size());
+    if (settings.debugView == 6 || settings.debugView == 7)
+        for (size_t i = 1; i < instances.size() && i < instOwner.size(); i++) {
+            const GInstance &g = instances[i];
+            Log("  instance %zu: type %u obj %08x flags %x firstIndex %u tex %u pos %.0f,%.0f,%.0f alpha %.2f", i, (unsigned)(instOwner[i] >> 32),
+                (unsigned)instOwner[i], g.flags, g.firstIndex, g.tex, g.r[0][3], g.r[1][3], g.r[2][3], g.color[3]);
+        }
     shotPath.clear();
 }
 

@@ -149,6 +149,8 @@ private:
     std::vector<GLight> lights;
     std::vector<VkAccelerationStructureInstanceKHR> tlasInstances;
     std::vector<CasterTri> casterTris;
+    std::vector<uint64_t> instOwner;        // diagnostics: (object type << 32) | object key per instance
+    uint64_t curOwner = 0;
     uint32_t dynHalf = 0, dynVerts = 0, dynIndices = 0, dynTris = 0;
     uint32_t rtDynFirstIndex = 0, rtDynTris = 0;      // dynamic BLAS range (opaque casters come first)
     uint32_t frameIndex = 0;

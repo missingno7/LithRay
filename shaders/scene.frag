@@ -301,6 +301,13 @@ void main() {
     else if (dbg == 3) color = vec3(ao);
     else if (dbg == 4) color = tx.rgb;
     else if (dbg == 5) color = vec3(fract(vWorld / 256.0));
+    else if (dbg == 6 || dbg == 7) {
+        // 6: one colour per instance, 7: one colour per world surface (red channel 1 = world model, 0 = main world)
+        uint id = dbg == 6 ? vInstance : (world ? triTable[I.triBase + uint(gl_PrimitiveID)] : 0u);
+        uint hsh = id * 2654435761u;
+        color = vec3(float((hsh >> 8) & 255u), float((hsh >> 16) & 255u), float((hsh >> 24) & 255u)) / 255.0 * (0.4 + 0.6 * clamp(dot(n, v), 0.0, 1.0));
+        if (dbg == 7) color.r = (world && vInstance != 1u) ? 1.0 : 0.0;
+    }
 
     outColor = vec4(color, alpha);
     vec2 cur = vClip.xy / vClip.w, prev = vPrevClip.xy / vPrevClip.w;
