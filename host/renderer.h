@@ -44,7 +44,7 @@ enum Pipe { P_OPAQUE, P_SKYMASK, P_BLEND, P_ADD, P_NOZ, P_BLEND_ZWRITE, P_COUNT 
 enum Group { G_SKY, G_WORLD, G_SOLID_MODELS, G_SOLID_WORLDMODELS, G_SOLID_POLYGRIDS, G_TRANS_MODELS, G_PARTICLES, G_TRANS_POLYGRIDS,
              G_LINES, G_TRANS_WORLDMODELS, G_SPRITES, G_SPRITES_NOZ, G_CLOSE, G_COUNT };
 
-struct Draw { uint32_t instance, firstIndex, indexCount; uint8_t pipe, view, group; };
+struct Draw { uint32_t instance, firstIndex, indexCount; uint8_t pipe, view, group; float sortKey; };    // sortKey: larger draws first within a group
 
 struct ModelDef {
     std::vector<lr::ModelVertex> verts; std::vector<lr::ModelFace> faces; uint32_t nNodes = 0; std::string name;
@@ -98,7 +98,7 @@ private:
     void addPolyGrid(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const uint8_t *payload);
     void addLines(const lr::SceneCmd &sc, const lr::ObjectRecord &o, const uint8_t *payload);
     uint32_t pushInstance(const GInstance &i);
-    void pushDraw(Group g, Pipe p, uint32_t instance, uint32_t firstIndex, uint32_t indexCount, uint8_t view = 0);
+    void pushDraw(Group g, Pipe p, uint32_t instance, uint32_t firstIndex, uint32_t indexCount, uint8_t view = 0, float sortKey = 0);
     GVertex *allocDyn(uint32_t nVerts, uint32_t &firstVertex);
     uint32_t *allocDynIndices(uint32_t n, uint32_t &firstIndex);
     V3 sampleGrid(V3 pos) const;

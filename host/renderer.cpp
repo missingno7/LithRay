@@ -491,6 +491,24 @@ void Renderer::onTexUpload(const lr::TexUploadCmd &c, const uint8_t *p) {
     }
     GTexInfo ti = {alphaMask ? T_ALPHA : (fullbright ? T_FULLBRIGHT : 0u), GlossFromName(c.name), 0, 0};
     SpecFromName(c.name, ti.spec, ti.shininess);
+    {   // Material rule from the texture's own content: a texture with little texel-to-texel luminance noise (tiles,
+        // painted metal, polished stone) is a smooth surface and gets a highlight and a faint reflection; a noisy one
+        // (concrete, dirt, brick) stays matte. Name keywords can only raise it. The shader scales this by how much the
+        // surface faces up (floors more than walls) and ignores it on character models.
+        double hf = 0; uint32_t n = 0;
+        for (uint32_t y = 0; y + 1 < c.height; y++)
+            for (uint32_t x = 0; x + 1 < c.width; x++) {
+                const uint8_t *p0 = &px[((size_t)y * c.width + x) * 4], *p1 = p0 + 4, *p2 = p0 + (size_t)c.width * 4;
+                auto lum = [](const uint8_t *p) { return (p[0] * 0.299 + p[1] * 0.587 + p[2] * 0.114) / 255.0; };
+                double l0 = lum(p0);
+                hf += fabs(lum(p1) - l0) + fabs(lum(p2) - l0); n += 2;
+            }
+        float noise = n ? (float)(hf / n) : 1.0f;
+        float smooth = std::clamp(1.0f - noise / 0.055f, 0.0f, 1.0f);
+        ti.spec = std::max(ti.spec, 0.06f + 0.5f * smooth * smooth);
+        ti.shininess = std::max(ti.shininess, 14.0f + 60.0f * smooth);
+        ti.gloss = std::max(ti.gloss, 0.22f * smooth * smooth);
+    }
     // ---- generated normal map: the texture's luminance as a height field (slightly smoothed), central differences
     if (c.id < kMaxTextures / 2 - 1) {
         std::vector<uint8_t> npx;
@@ -782,8 +800,8 @@ uint32_t Renderer::pushInstance(const GInstance &i) {
     instances.push_back(i); instOwner.push_back(curOwner);
     return (uint32_t)instances.size() - 1;
 }
-void Renderer::pushDraw(Group g, Pipe p, uint32_t instance, uint32_t firstIndex, uint32_t indexCount, uint8_t view) {
-    if (indexCount) draws.push_back(Draw{instance, firstIndex, indexCount, (uint8_t)p, view, (uint8_t)g});
+void Renderer::pushDraw(Group g, Pipe p, uint32_t instance, uint32_t firstIndex, uint32_t indexCount, uint8_t view, float sortKey) {
+    if (indexCount) draws.push_back(Draw{instance, firstIndex, indexCount, (uint8_t)p, view, (uint8_t)g, sortKey});
 }
 GVertex *Renderer::allocDyn(uint32_t n, uint32_t &first) {
     if (dynVerts + n > kDynVerts) return nullptr;
@@ -950,18 +968,26 @@ void Renderer::addObject(const lr::SceneCmd &sc, const lr::ObjectRecord &o) {
         // d3d.ren: translucent iff the first surface has the translucent flag (object alpha is not consulted for the
         // choice); translucent and sky world models are one pre-lit Gouraud pass, two-sided, without lightmaps.
         bool translucent = b.translucent;
-        gi.firstIndex = b.firstIndex; gi.triBase = b.triBase;
-        // sky: always front faces only (seen from the sky camera), even when translucent (d3d.ren 0x1b9c0)
-        gi.flags = I_WORLD | (sky ? (I_SKY | I_PRELIT) : 0) | (translucent ? (I_PRELIT | I_BLEND | (sky ? 0 : I_TWOSIDED)) : 0);
-        gi.color[0] = gi.color[1] = gi.color[2] = 1; gi.color[3] = translucent ? o.rgba[3] / 255.0f : 1.0f;
-        uint32_t inst = pushInstance(gi);
-        pushDraw(sky ? G_SKY : translucent ? G_TRANS_WORLDMODELS : G_SOLID_WORLDMODELS, translucent ? P_BLEND : P_OPAQUE,
-                 inst, b.firstIndex, b.nTris * 3, sky ? 1 : 0);
-        // alpha-masked walls (fences, grates) are in the TLAS as non-opaque geometry; plain glass is not
+        // Alpha-masked walls (fences, grates: every texel is either there or not) are cut-outs. Drawn alpha-tested with
+        // depth they sort correctly against everything -- the original blends them in list order, so a far one can cover
+        // a near one -- and they go through the same ray-traced lighting as solid geometry. Plain glass stays blended,
+        // sorted far to near.
         bool masked = false;
-        if (translucent)
+        if (translucent && !sky)
             for (uint32_t si = b.firstSurface; si < b.firstSurface + b.nSurfaces && si < surfaces.size() && !masked; si++)
                 masked = (texInfoCpu[surfaces[si].tex < kMaxTextures ? surfaces[si].tex : 0].flags & T_ALPHA) != 0;
+        bool cutout = masked && o.rgba[3] >= 250;
+        gi.firstIndex = b.firstIndex; gi.triBase = b.triBase;
+        // sky: always front faces only (seen from the sky camera), even when translucent (d3d.ren 0x1b9c0)
+        gi.flags = I_WORLD | (sky ? (I_SKY | I_PRELIT) : 0) |
+                   (cutout ? (I_PRELIT | I_TWOSIDED | I_ALPHATEST) : translucent ? (I_PRELIT | I_BLEND | (sky ? 0 : I_TWOSIDED)) : 0);
+        gi.color[0] = gi.color[1] = gi.color[2] = 1; gi.color[3] = translucent ? o.rgba[3] / 255.0f : 1.0f;
+        uint32_t inst = pushInstance(gi);
+        V3 centre = xf.point((b.bmin + b.bmax) * 0.5f);
+        float dist = length(centre - camPos);
+        bool blended = translucent && !cutout;
+        pushDraw(sky ? G_SKY : blended ? G_TRANS_WORLDMODELS : G_SOLID_WORLDMODELS, blended ? P_BLEND : P_OPAQUE,
+                 inst, b.firstIndex, b.nTris * 3, sky ? 1 : 0, (blended && !sky) ? dist : 0.0f);
         if (gfx.rt && !sky && (!translucent || masked) && b.blas.as && tlasInstances.size() < kMaxTlas) {
             VkAccelerationStructureInstanceKHR ti = {};
             memcpy(ti.transform.matrix, xf.m, 48);
@@ -1304,7 +1330,8 @@ void Renderer::renderFrame(bool hadScene) {
     VkRect2D fullRect = {{0, 0}, gfx.extent};
     int lh = frameIndex & 1;
     if (drawScene) {
-        std::stable_sort(draws.begin(), draws.end(), [](const Draw &a, const Draw &b) { return a.group < b.group; });
+        // d3d.ren's group order; inside a group the submission order, except where a sort key asks for far-to-near
+        std::stable_sort(draws.begin(), draws.end(), [](const Draw &a, const Draw &b) { return a.group != b.group ? a.group < b.group : a.sortKey > b.sortKey; });
         auto beginScenePass = [&](VkImageView color0, bool clear) {
             VkRenderingAttachmentInfo ca[4] = {{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO},
                                                {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}};

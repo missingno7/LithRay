@@ -197,7 +197,7 @@ vec3 cosineDir(vec3 n, vec2 u);
 
 // Direct light of the level's lamps at p: every lamp in reach, Lambert, one shadow ray each towards a random point
 // of a small sphere around the lamp (soft edges once accumulated).
-vec3 lampDirect(vec3 p, vec3 n, vec3 origin, uint wantFlags, int maxRays, vec3 view, float shininess, out vec3 spec) {
+vec3 lampDirect(vec3 p, vec3 n, vec3 origin, uint wantFlags, int maxRays, vec3 view, float shininess, bool thin, out vec3 spec) {
     spec = vec3(0.0);
     uint b, e;
     if (!lampCell(p, b, e)) return vec3(0.0);
@@ -209,6 +209,9 @@ vec3 lampDirect(vec3 p, vec3 n, vec3 origin, uint wantFlags, int maxRays, vec3 v
         vec3 to; float d;
         vec3 c = lampAt(l, p, to, d);
         float ndl = dot(n, to) / max(d, 0.001);
+        // a thin cut-out (fence) is lit from either side; its shadow ray starts on the lamp's side of the sheet
+        vec3 ro = origin;
+        if (thin && ndl < 0.0) { ndl = -ndl * 0.8; ro = origin - n * 1.6; }
         if (ndl <= 0.0) continue;
         // The level was lit for a bake WITHOUT a cosine term (a lamp lights every surface facing it equally). Pure
         // Lambert makes walls much darker than the designers saw; half-way keeps their balance and still reads as form.
@@ -220,7 +223,7 @@ vec3 lampDirect(vec3 p, vec3 n, vec3 origin, uint wantFlags, int maxRays, vec3 v
             // a small spherical lamp: sharp at contact, softer with distance from the caster (accumulated by the resolve)
             vec3 target = to + rndSphere() * frame.gi.w;
             float td = length(target);
-            vis = traceMasked(origin, target / td, max(td - 2.0, 0.0), 0xffu);
+            vis = traceMasked(ro, target / td, max(td - 2.0, 0.0), 0xffu);
             rays++;
         }
         sum += c * ndl * vis;
@@ -399,7 +402,7 @@ void main() {
     // shading normal with the generated relief (lit world and model surfaces only)
     vec3 nb = geoN;
     // (weaker on models: a face or a coat read as embossed print otherwise)
-    if (frame.mat.x > 0.0 && (I.flags & (I_UNLIT | I_SKY | I_PRELIT)) == 0u)
+    if (frame.mat.x > 0.0 && (I.flags & (I_UNLIT | I_SKY | I_BLEND)) == 0u)
         nb = bumpNormal(geoN, tex, vUv, frame.mat.x * ((I.flags & I_MODEL) != 0u ? 0.3 : 1.0));
 
     float alpha = I.color.a;
@@ -473,7 +476,9 @@ void main() {
     float scatterOut = 0.0;
 #ifdef RT
     {
-        bool surfWorld = world && (I.flags & (I_PRELIT | I_SKY | I_BLEND)) == 0u && (sflags & SURF_BRIGHT) == 0u;
+        // (alpha-tested cut-outs are pre-lit in the classic modes but take the full ray-traced path here)
+        bool cutout = (I.flags & I_ALPHATEST) != 0u;
+        bool surfWorld = world && (I.flags & (I_SKY | I_BLEND)) == 0u && ((I.flags & I_PRELIT) == 0u || cutout) && (sflags & SURF_BRIGHT) == 0u;
         bool surfModel = (I.flags & I_MODEL) != 0u && (I.flags & (I_CLOSE | I_SKY)) == 0u && I.color.a >= 0.999;
         if (rtOn > 0.5 && frame.gi.x > 0.5 && frame.lampCount > 0u && (surfWorld || surfModel)) {
             composed = true;
@@ -481,8 +486,11 @@ void main() {
             rnd();
             vec3 o = vWorld + geoN * (surfModel ? 1.5 : 0.75);
             vec3 spec;
-            vec3 direct = lampDirect(vWorld, nb, o, surfModel ? 3u : 1u, 8, v, max(texInfo[tex].shininess, 4.0), spec);
-            specOut = spec * texInfo[tex].spec * frame.mat.y * frame.lightScale.rgb * 0.5;
+            vec3 direct = lampDirect(vWorld, nb, o, surfModel ? 3u : 1u, 8, v, max(texInfo[tex].shininess, 4.0), cutout, spec);
+            // highlights: the texture's own smoothness, stronger on floors; characters stay matte (the view weapon and
+            // chrome models keep theirs)
+            float specScale = surfModel ? (((I.flags & I_CHROME) != 0u) ? 1.0 : 0.0) : mix(0.45, 1.0, clamp(geoN.y, 0.0, 1.0));
+            specOut = spec * texInfo[tex].spec * specScale * frame.mat.y * frame.lightScale.rgb * 0.6;
             vec3 bounce = bounceRadiance(o, cosineDir(geoN, vec2(rnd(), rnd()))) * frame.gi.y;
             bool lookNow = frame.mat.z > 0.5;
             vec3 scale = lookNow ? frame.lightScale.rgb * 1.3 : frame.lightScale.rgb * frame.lightScale.a;
@@ -526,7 +534,9 @@ void main() {
         float ndv = clamp(dot(geoN, v), 0.0, 1.0);
         // chrome models: the original's fixed skin / environment mix; water: stronger at grazing angles; other
         // surfaces: a keyword-derived gloss with a Fresnel curve (not from the game's data)
-        float fres = max(close ? 0.0 : gloss * (0.25 + 0.75 * pow(1.0 - ndv, 4.0)),
+        // content-derived gloss counts on world surfaces only, floors more than walls
+        float worldGloss = world ? gloss * mix(0.35, 1.0, clamp(geoN.y, 0.0, 1.0)) : 0.0;
+        float fres = max(close ? 0.0 : worldGloss * (0.25 + 0.75 * pow(1.0 - ndv, 4.0)),
                          water ? I.light.a * (0.4 + 0.6 * pow(1.0 - ndv, 3.0)) : chrome);
         if (frame.rt.z > 0.5 && fres > 0.01) {
             vec3 rdir = reflect(-v, normalize(mix(geoN, nb, 0.6)));
