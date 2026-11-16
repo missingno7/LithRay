@@ -175,6 +175,19 @@ with alpha = skin texture alpha x object alpha, so `1 - that` is the game's per-
 alpha mask is in effect a reflectivity map: the view pistol's slide). This includes the view model. A polygrid
 reflects when it has an environment map.
 
+Material rules (invented; every texture's result is logged as a `tex ...` line in the host log, which is the place
+to tune from): a texture's texel-to-texel luminance noise gives a smoothness, which sets highlight strength,
+shininess and a faint reflection. World floors get a polished baseline whatever their pattern, unless the texture is
+classed matte by name (dirt, grass, carpet, ...). A metal class (name keywords such as the train's `SUBCAR` /
+`SUBINTERIOR` panels, pipes, rails; or smooth, colourless content that is not named as concrete, tile or the like)
+gets albedo-tinted highlights and reflections and a darker diffuse. Character models take no highlight; chrome
+models and the view weapon follow the engine's reflectivity instead. Blood II names its texture folders by colour
+family (`GREYS`, `REDS`), so names are a weak signal and the lists are tuned by looking at the log.
+
+Masked world models (fences, grates) are drawn alpha-tested with depth in the opaque pass and take the full
+ray-traced path, lit from either side; the original blends them in list order (a far one can cover a near one). Plain
+glass stays blended, sorted far to near.
+
 Invented materials (not game data; `lr_Bump`, `lr_Specular`, 0 turns each off): at texture upload the host generates
 a normal map from the texture's own luminance (smoothed height field, central differences, one per mip) and binds it
 at slot `id + 2048`; the fragment shader applies it in a cotangent frame built from screen-space derivatives (no

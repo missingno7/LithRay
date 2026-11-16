@@ -508,6 +508,26 @@ void Renderer::onTexUpload(const lr::TexUploadCmd &c, const uint8_t *p) {
         ti.spec = std::max(ti.spec, 0.06f + 0.5f * smooth * smooth);
         ti.shininess = std::max(ti.shininess, 14.0f + 60.0f * smooth);
         ti.gloss = std::max(ti.gloss, 0.22f * smooth * smooth);
+        // material classes: by name, and metal also by content (smooth and nearly colourless = bare or painted metal)
+        char lower[96]; size_t li = 0;
+        for (; c.name[li] && li < sizeof(lower) - 1; li++) lower[li] = (char)tolower((unsigned char)c.name[li]);
+        lower[li] = 0;
+        auto has = [&](std::initializer_list<const char *> keys) { for (const char *k : keys) if (strstr(lower, k)) return true; return false; };
+        const TexStats &st = texStats[c.id];
+        float mx = std::max({st.avg[0], st.avg[1], st.avg[2]}), mn = std::min({st.avg[0], st.avg[1], st.avg[2]});
+        float sat = mx > 0.001f ? (mx - mn) / mx : 0.0f;
+        // (Blood II names its texture folders by colour family, not material, so the file names carry most of it)
+        bool glass = has({"glass", "window", "mirror"});
+        bool mineral = has({"crete", "conc", "brick", "stone", "insul", "plaster", "cement", "asphalt", "tile", "marble", "wood", "plank"});
+        bool matte = !glass && has({"dirt", "grass", "ground", "mud", "sand", "snow", "rock", "carpet", "cloth", "rug", "gravel", "rubble", "trash", "flesh", "blood"});
+        bool metal = !matte && !glass && !mineral && !has({"environmentmaps", "sprite", "interface", "skins"}) &&
+                     (has({"metal", "steel", "iron", "chrome", "pipe", "rail", "grate", "vent", "girder", "duct", "mtl", "alum", "copper", "brass", "rust",
+                           "subcar", "subinterior", "subdoor", "hull", "train", "tracks", "rivet", "dull", "locker", "tank", "boiler", "elevator"}) ||
+                      (sat < 0.12f && smooth > 0.6f && mx > 0.15f && mx < 0.7f));
+        if (matte) { ti.flags |= T_MATTE; ti.spec = std::min(ti.spec, 0.04f); ti.gloss = 0; }
+        if (metal) { ti.flags |= T_METAL; ti.spec = std::max(ti.spec, 0.55f); ti.shininess = std::max(ti.shininess, 36.0f); ti.gloss = std::max(ti.gloss, 0.3f); }
+        Log("tex %u %s %ux%u noise %.3f smooth %.2f sat %.2f avg %.2f%s%s -> spec %.2f shin %.0f gloss %.2f", c.id, c.name, c.width, c.height, noise, smooth, sat, mx,
+            metal ? " METAL" : "", matte ? " MATTE" : "", ti.spec, ti.shininess, ti.gloss);
     }
     // ---- generated normal map: the texture's luminance as a height field (slightly smoothed), central differences
     if (c.id < kMaxTextures / 2 - 1) {
@@ -1387,7 +1407,7 @@ void Renderer::renderFrame(bool hadScene) {
                             lightHistValid ? 1.0f : 0.0f, hw, tanX, tanY,
                             sceneViewport.x / gfx.extent.width, sceneViewport.y / gfx.extent.height, sceneViewport.width / gfx.extent.width,
                             sceneViewport.height / gfx.extent.height,
-                            modernLook ? 1.0f : 0.0f, modernLook ? 6.0f : 1.0f, settings.shadowSoftness > 0 ? 0.8f : 0.0f, 0,
+                            modernLook ? 1.0f : 0.0f, modernLook ? 3.2f : 1.0f, settings.shadowSoftness > 0 ? 0.8f : 0.0f, 0,
                             // in-scattered light takes the level's fog colour when it has fog, a warm white otherwise
                             settings.fogEnable != 0 ? frameData.fogColor[0] * 0.6f + 0.4f : 1.0f, settings.fogEnable != 0 ? frameData.fogColor[1] * 0.6f + 0.4f : 0.95f,
                             settings.fogEnable != 0 ? frameData.fogColor[2] * 0.6f + 0.4f : 0.85f, 0};
@@ -1422,7 +1442,7 @@ void Renderer::renderFrame(bool hadScene) {
                 vkCmdSetViewport(cmd, 0, 1, &vp); vkCmdSetScissor(cmd, 0, 1, &area);
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipe);
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, postPL, 0, 1, &bloomSet[srcSet], 0, nullptr);
-                float pc[24] = {mode, 1.0f};
+                float pc[24] = {mode, 1.5f};
                 vkCmdPushConstants(cmd, postPL, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 96, pc);
                 vkCmdDraw(cmd, 3, 1, 0, 0);
                 vkCmdEndRendering(cmd);
@@ -1460,7 +1480,7 @@ void Renderer::renderFrame(bool hadScene) {
                         lightAdd[0], lightAdd[1], lightAdd[2], drawScene ? 1.0f : 0.0f,
                         (rtOn && settings.rtAO != 0) ? 1.0f : 0.0f, historyValid ? 1.0f : 0.0f, nearZ, farZ,
                         (settings.exposure > 0 ? settings.exposure : 1.0f) * (look ? 1.35f : 1.0f), settings.debugView, overlayEmpty ? 0.0f : 1.0f, 0,
-                        look ? 1.0f : 0.0f, (look && settings.bloom > 0) ? settings.bloom * 0.35f : 0.0f, gfx.hdrOutput ? 1.0f : 0.0f, 200.0f};
+                        look ? 1.0f : 0.0f, (look && settings.bloom > 0) ? settings.bloom * 0.18f : 0.0f, gfx.hdrOutput ? 1.0f : 0.0f, 200.0f};
         vkCmdPushConstants(cmd, postPL, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 96, pc);
         vkCmdDraw(cmd, 3, 1, 0, 0);
         vkCmdEndRendering(cmd);

@@ -24,6 +24,8 @@
 // texInfo flags
 #define T_FULLBRIGHT 0x1u           // alpha marks fullbright texels
 #define T_ALPHA      0x2u           // alpha is real alpha (4-bit masks)
+#define T_METAL      0x4u           // invented material class: tinted highlights and reflections, darker diffuse
+#define T_MATTE      0x8u           // invented material class: never polished (dirt, grass, carpet, ...)
 
 struct Vertex { vec3 pos; uint color; vec2 uv; vec2 lmuv; vec3 normal; uint pad; };      // 48 bytes, scalar
 struct Instance {

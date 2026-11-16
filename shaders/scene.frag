@@ -215,7 +215,7 @@ vec3 lampDirect(vec3 p, vec3 n, vec3 origin, uint wantFlags, int maxRays, vec3 v
         if (ndl <= 0.0) continue;
         // The level was lit for a bake WITHOUT a cosine term (a lamp lights every surface facing it equally). Pure
         // Lambert makes walls much darker than the designers saw; half-way keeps their balance and still reads as form.
-        if (frame.mat.z > 0.5) c *= (1.0 - d / l.posRadius.w) * 2.6;      // modern look: true Lambert, light concentrated near the lamp
+        if (frame.mat.z > 0.5) c *= 0.5 + (1.0 - d / l.posRadius.w) * 1.6;   // modern look: true Lambert, light somewhat concentrated near the lamp
         else ndl = 0.5 + 0.5 * ndl;
         if (luma(c) * ndl < 0.004) continue;
         float vis = 1.0;
@@ -276,7 +276,7 @@ vec3 bounceRadiance(vec3 origin, vec3 dir) {
         if (ndl > 0.0 && luma(c) > 0.01)
             irr += min(c * (0.5 + 0.5 * ndl) * float(count), vec3(3.0)) * traceMasked(hp + hn * 0.75, to / d, max(d - 2.0, 0.0), 0x07u) * frame.gi.z;
     }
-    if (lin) return pow(tx.rgb, vec3(2.2)) * mix(irr * frame.lightScale.rgb * 1.3, vec3(6.0), emissive);
+    if (lin) return pow(tx.rgb, vec3(2.2)) * mix(irr * frame.lightScale.rgb * 1.3, vec3(3.2), emissive);
     return tx.rgb * mix(irr * frame.lightScale.rgb * frame.lightScale.a, vec3(1.5), emissive);
 }
 
@@ -489,15 +489,22 @@ void main() {
             vec3 direct = lampDirect(vWorld, nb, o, surfModel ? 3u : 1u, 8, v, max(texInfo[tex].shininess, 4.0), cutout, spec);
             // highlights: the texture's own smoothness, stronger on floors; characters stay matte (the view weapon and
             // chrome models keep theirs)
-            float specScale = surfModel ? (((I.flags & I_CHROME) != 0u) ? 1.0 : 0.0) : mix(0.45, 1.0, clamp(geoN.y, 0.0, 1.0));
-            specOut = spec * texInfo[tex].spec * specScale * frame.mat.y * frame.lightScale.rgb * 0.6;
+            float up = clamp(geoN.y, 0.0, 1.0);
+            bool metal = (tflags & T_METAL) != 0u;
+            float sp = texInfo[tex].spec;
+            // indoor floors are polished whatever their pattern (speckled terrazzo reads as "noisy" to the content rule)
+            if (world && (tflags & T_MATTE) == 0u) sp = max(sp, 0.34 * up);
+            float specScale = surfModel ? (((I.flags & I_CHROME) != 0u) ? 1.0 : 0.0) : (metal ? 1.0 : mix(0.45, 1.0, up));
+            // a metal's highlight takes the metal's own colour
+            vec3 specTint = metal ? mix(vec3(1.0), pow(tx.rgb, vec3(2.2)) * 3.0, 0.65) * 1.7 : vec3(1.0);
+            specOut = spec * sp * specScale * specTint * frame.mat.y * frame.lightScale.rgb * 0.6;
             vec3 bounce = bounceRadiance(o, cosineDir(geoN, vec2(rnd(), rnd()))) * frame.gi.y;
             bool lookNow = frame.mat.z > 0.5;
             vec3 scale = lookNow ? frame.lightScale.rgb * 1.3 : frame.lightScale.rgb * frame.lightScale.a;
             // keep only the dynamic-light part of the classic term: the baked part is what the rays replace
             // direct light stays sharp (never filtered); the bounce goes to its own buffer for the resolve to denoise
             // modern look: a small ambient floor only; the bounce light does the filling
-            light = (surfModel ? I.color.rgb * (lookNow ? 0.6 : 1.0) : frame.ambient.rgb * (lookNow ? 0.16 : 0.5) * scale) + direct * scale + dynLight;
+            light = (surfModel ? I.color.rgb * (lookNow ? 0.6 : 1.0) : frame.ambient.rgb * (lookNow ? 0.26 : 0.5) * scale) + direct * scale + dynLight;
             bounceOut = bounce;
             if (frame.vol.x > 0.0) scatterOut = inScatter(frame.camPos.xyz, vWorld);
         }
@@ -506,6 +513,7 @@ void main() {
     bool look = frame.mat.z > 0.5;
     // composed pixels are lit in linear light in the modern look; everything else is converted when written
     vec3 alb = (look && composed) ? pow(tx.rgb, vec3(2.2)) : tx.rgb;
+    if (composed && (tflags & T_METAL) != 0u) alb *= 0.72;      // metals reflect more than they scatter
     vec3 color = alb * light + specOut;
     // the texture's fullbright layer; in the composed path the resolve applies it, so it bypasses the light filter
     float fbMask = ((tflags & T_FULLBRIGHT) != 0u && !alphaOpacity) ? tx.a : 0.0;
@@ -535,7 +543,12 @@ void main() {
         // chrome models: the original's fixed skin / environment mix; water: stronger at grazing angles; other
         // surfaces: a keyword-derived gloss with a Fresnel curve (not from the game's data)
         // content-derived gloss counts on world surfaces only, floors more than walls
-        float worldGloss = world ? gloss * mix(0.35, 1.0, clamp(geoN.y, 0.0, 1.0)) : 0.0;
+        float upR = clamp(geoN.y, 0.0, 1.0);
+        bool metalR = (tflags & T_METAL) != 0u;
+        float worldGloss = 0.0;
+        if (world) {
+            worldGloss = metalR ? max(gloss, 0.3) : max(gloss, (tflags & T_MATTE) == 0u ? 0.16 * upR : 0.0) * mix(0.35, 1.0, upR);
+        }
         float fres = max(close ? 0.0 : worldGloss * (0.25 + 0.75 * pow(1.0 - ndv, 4.0)),
                          water ? I.light.a * (0.4 + 0.6 * pow(1.0 - ndv, 3.0)) : chrome);
         if (frame.rt.z > 0.5 && fres > 0.01) {
@@ -543,6 +556,7 @@ void main() {
             if (dot(rdir, geoN) < 0.02) rdir = reflect(-v, geoN);
             vec3 rcol = traceRadiance(origin, rdir, 6000.0);
             if (look && composed) rcol = pow(rcol, vec3(2.2));
+            if (metalR) rcol *= mix(vec3(1.0), tx.rgb * 1.7, 0.6);       // tinted reflection
             color = mix(color, rcol, clamp(fres * frame.rt.z, 0.0, 1.0));
         }
     }
@@ -592,8 +606,8 @@ void main() {
     } else {
         if (look) {
             // display-referred result -> linear; things that glow get room above white so they bloom
-            float glow = 1.0 + 4.0 * fbMask + ((sflags & SURF_BRIGHT) != 0u ? 3.0 : 0.0) +
-                         (((I.flags & I_UNLIT) != 0u && (I.flags & (I_SKY | I_WATER)) == 0u) ? 1.0 : 0.0);
+            float glow = 1.0 + 2.2 * fbMask + ((sflags & SURF_BRIGHT) != 0u ? 1.5 : 0.0) +
+                         (((I.flags & I_UNLIT) != 0u && (I.flags & (I_SKY | I_WATER)) == 0u) ? 0.5 : 0.0);
             color = pow(max(color, vec3(0.0)), vec3(2.2)) * glow;
         }
         outColor = vec4(color, alpha);
