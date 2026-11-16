@@ -23,6 +23,8 @@ Last updated 2026-11-16 (first session, with the user playing the game during th
   in one session, no errors).
 * Sky and moon after the sky rewrite (the user: "about right", not verified pixel-exact against d3d.ren).
 * Masked walls (fence): two-sided, alpha-tested shadows (the user: "looks right").
+* Per-pixel depth-sorted transparency and scene-lit decals: blood behind fence bars is ordered and lit correctly
+  (confirmed by the user in the city level). Water: "looks good". Glass visible after the per-texel split.
 
 ## Bugs found by running the game (and their real causes)
 
