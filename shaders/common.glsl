@@ -65,7 +65,7 @@ layout(set = 0, binding = 1, scalar, row_major) uniform Frame {
     vec4 ambient;                   // rgb: level lightmap ambient, a: static lamp shadows on
     vec4 lampGridOrigin;            // xyz: grid origin, w: cell size
     ivec3 lampGridDims; uint lampCount;
-    uint nLights; uint pad0, pad1, pad2;
+    uint nLights; uint oitCapacity; uint pad1, pad2;
 } frame;
 layout(set = 0, binding = 2, scalar) readonly buffer Vertices { Vertex vertices[]; };
 layout(set = 0, binding = 3, scalar) readonly buffer Indices { uint indices[]; };
@@ -76,6 +76,13 @@ layout(set = 0, binding = 7, scalar) readonly buffer Lights { Light lights[]; };
 layout(set = 0, binding = 8, scalar) readonly buffer TexInfos { TexInfo texInfo[]; };
 layout(set = 0, binding = 10, scalar) readonly buffer Lamps { Lamp lamps[]; };
 layout(set = 0, binding = 11, scalar) readonly buffer LampData { uint lampData[]; };    // cell offsets (ncells + 1), then lamp indices
+
+// Per-pixel lists of the frame's blended fragments (order-independent transparency): heads holds index + 1 of the
+// pixel's newest node, 0 = none.
+struct OitNode { uint rg; uint ba; float depth; uint next; };     // colour as half floats (r, g) and (b, alpha)
+layout(set = 0, binding = 12, r32ui) uniform uimage2D oitHeads;
+layout(set = 0, binding = 13, scalar) buffer OitNodes { OitNode oitNodes[]; };
+layout(set = 0, binding = 14, scalar) buffer OitCounter { uint oitCount; };
 
 #define SURF_SKY 0x10u
 #define SURF_BRIGHT 0x20u

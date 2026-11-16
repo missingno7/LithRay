@@ -4,6 +4,10 @@
 // reflections and ambient occlusion against the frame's TLAS.
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
+#ifdef OIT
+// blended fragments are stored, not blended: depth is tested before the shader so hidden ones cost nothing
+layout(early_fragment_tests) in;
+#endif
 #ifdef RT
 #extension GL_EXT_ray_query : require
 layout(set = 0, binding = 9) uniform accelerationStructureEXT tlas;
@@ -631,6 +635,17 @@ void main() {
             color = pow(max(color, vec3(0.0)), vec3(2.2)) * glow;
         }
         outColor = vec4(color, alpha);
+#ifdef OIT
+        // into this pixel's fragment list; the resolve sorts the list by depth and composites it
+        float oa = clamp(alpha, 0.0, 1.0);
+        if (oa > 0.004) {
+            uint idx = atomicAdd(oitCount, 1u);
+            if (idx < frame.oitCapacity) {
+                uint prev = imageAtomicExchange(oitHeads, ivec2(gl_FragCoord.xy), idx + 1u);
+                oitNodes[idx] = OitNode(packHalf2x16(min(color.rg, vec2(60000.0))), packHalf2x16(vec2(min(color.b, 60000.0), oa)), gl_FragCoord.z, prev);
+            }
+        }
+#endif
         outLight = vec4(0.0);
         outIndirect = vec4(0.0);
     }

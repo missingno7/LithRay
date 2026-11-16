@@ -191,8 +191,13 @@ lamps. A fence is solid bars with a thin blended fringe; a glass pane has no sol
 original blends the whole wall without depth in list order, so a far wall or a decal behind it can cover a near one.
 (Two earlier attempts classified whole textures by alpha statistics; both mis-sorted real content and were removed.)
 
-The blended remainder (glass, fringes, sprites) is sorted per object, far to near. That is an approximation: exact
-ordering between overlapping translucent layers needs per-pixel sorting (order-independent transparency), not done.
+Blended fragments are ordered **per pixel by depth** (order-independent transparency): the blended pass does not
+blend. Each fragment that passes the depth test against the opaque scene is appended to its pixel's linked list
+(`oitHeads` image + `oitNodes` buffer, colour as half floats, 16 bytes per fragment, capacity 3 per pixel on average,
+`early_fragment_tests`); `oit.frag` then sorts each pixel's list (up to 24 fragments) farthest first and composites
+it over the lit scene. Draw order, groups and object distances play no part. The sky's blended objects are the
+exception: they are drawn in the sky pass in list order, as the original does.
+
 Decals (rotatable sprites) are lit by the lamps reaching them instead of their flat object colour.
 
 Invented materials (not game data; `lr_Bump`, `lr_Specular`, 0 turns each off): at texture upload the host generates

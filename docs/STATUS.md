@@ -52,6 +52,11 @@ Last updated 2026-11-16 (first session, with the user playing the game during th
 * Full ray-traced mode dimmer than the original: the bake has no cosine term; and "bright" things are not tagged
   polygons in this level (no surface has flag 0x20) but fullbright texels and ordinary lightmapped world models.
 
+* Blended surfaces in the wrong order (a far fence over a near one, blood behind bars drawn over them): the original
+  blends in a fixed group order with no sorting. Two attempts that classified textures as "fence" or "glass" by alpha
+  statistics were workarounds and were removed. The fix is structural: solid texels of a masked wall go to the opaque
+  pass (per texel), and all blended fragments are sorted per pixel by depth before compositing.
+
 ## Implemented but not yet verified in game
 
 * Mode switch from the options menu.

@@ -83,6 +83,7 @@ void Gfx::init() {
         dext.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
     }
     VkPhysicalDeviceFeatures2 f2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    f2.features.fragmentStoresAndAtomics = VK_TRUE;       // per-pixel transparency lists are written from fragment shaders
     f2.features.samplerAnisotropy = VK_TRUE; f2.features.shaderInt16 = VK_FALSE; f2.features.independentBlend = VK_TRUE;
     f2.features.depthClamp = VK_TRUE; f2.features.depthBiasClamp = VK_TRUE; f2.features.wideLines = VK_FALSE;
     VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};

@@ -42,19 +42,25 @@ void Renderer::createStatic() {
 
     // scene set
     {
-        VkDescriptorSetLayoutBinding b[12] = {};
-        VkDescriptorBindingFlags bf[12] = {};
-        auto stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        b[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-        bf[0] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
-        b[1] = {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, (VkShaderStageFlags)stages, nullptr};
-        for (uint32_t i = 2; i <= 8; i++) b[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, (VkShaderStageFlags)stages, nullptr};
-        b[9] = {9, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-        bf[9] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-        b[10] = {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-        b[11] = {11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-        uint32_t n = 12;
-        if (!gfx.rt) { b[9] = b[10]; b[10] = b[11]; bf[9] = 0; n = 11; }
+        std::vector<VkDescriptorSetLayoutBinding> bv;
+        std::vector<VkDescriptorBindingFlags> bfv;
+        auto stages = (VkShaderStageFlags)(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+        auto add = [&](uint32_t binding, VkDescriptorType type, uint32_t count, VkShaderStageFlags st, VkDescriptorBindingFlags flags) {
+            bv.push_back({binding, type, count, st, nullptr}); bfv.push_back(flags);
+        };
+        add(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures, VK_SHADER_STAGE_FRAGMENT_BIT,
+            VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT);
+        add(1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, stages, 0);
+        for (uint32_t i = 2; i <= 8; i++) add(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stages, 0);
+        if (gfx.rt) add(9, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_FRAGMENT_BIT, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+        add(10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, 0);
+        add(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, 0);
+        add(12, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+        add(13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+        add(14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, 0);
+        uint32_t n = (uint32_t)bv.size();
+        VkDescriptorSetLayoutBinding *b = bv.data();
+        VkDescriptorBindingFlags *bf = bfv.data();
         VkDescriptorSetLayoutBindingFlagsCreateInfo fi = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
         fi.bindingCount = n; fi.pBindingFlags = bf;
         VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -69,10 +75,11 @@ void Renderer::createStatic() {
         VKC(vkCreateDescriptorSetLayout(dev, &li, nullptr, &postLayout));
     }
     VkDescriptorPoolSize ps[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures + 160}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
-                                 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 24}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2}};
+                                 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 24}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
+                                 {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2}};
     VkDescriptorPoolCreateInfo pi = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT; pi.maxSets = 16;
-    pi.poolSizeCount = gfx.rt ? 4 : 3; pi.pPoolSizes = ps;
+    pi.poolSizeCount = gfx.rt ? 5 : 4; pi.pPoolSizes = ps;
     VKC(vkCreateDescriptorPool(dev, &pi, nullptr, &descPool));
     VkDescriptorSetLayout layouts[10] = {sceneLayout, postLayout, postLayout, postLayout, postLayout, postLayout, postLayout, postLayout, postLayout, postLayout};
     VkDescriptorSet sets[10];
@@ -126,7 +133,51 @@ void Renderer::createStatic() {
     for (uint32_t i = 0; i < kMaxTextures; i++) writeTextureSlot(i, (i >= kMaxTextures / 2 && i != kTexLightmap) ? flatNormal.view : white.view);
 
     for (int r = 0; r < (gfx.rt ? 2 : 1); r++)
-        for (int p = 0; p < P_COUNT; p++) pipes[r][p] = makeScenePipeline((Pipe)p, r == 1);
+        for (int p = 0; p < P_COUNT; p++) {
+            pipes[r][p] = makeScenePipeline((Pipe)p, r == 1);
+            if (p == P_BLEND || p == P_NOZ || p == P_ADD || p == P_BLEND_ZWRITE) oitPipes[r][p] = makeScenePipeline((Pipe)p, r == 1, true);
+        }
+    {   // transparency resolve: fullscreen, result = sorted fragments + background * remaining transmittance
+        VkShaderModule vs = gfx.shader(post_vert_spv, sizeof(post_vert_spv)), fs = gfx.shader(oit_frag_spv, sizeof(oit_frag_spv));
+        VkPipelineShaderStageCreateInfo st[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
+        st[0].stage = VK_SHADER_STAGE_VERTEX_BIT; st[0].module = vs; st[0].pName = "main";
+        st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = fs; st[1].pName = "main";
+        VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; rs.lineWidth = 1;
+        VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        VkPipelineColorBlendAttachmentState ba = {};
+        ba.colorWriteMask = 0x7; ba.blendEnable = VK_TRUE;
+        ba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; ba.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA; ba.colorBlendOp = VK_BLEND_OP_ADD;
+        ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE; ba.alphaBlendOp = VK_BLEND_OP_ADD;
+        VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = 1; cb.pAttachments = &ba;
+        VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dy.dynamicStateCount = 2; dy.pDynamicStates = dyn;
+        VkFormat fmt = kColorFmt;
+        VkPipelineRenderingCreateInfo ri = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        ri.colorAttachmentCount = 1; ri.pColorAttachmentFormats = &fmt;
+        VkGraphicsPipelineCreateInfo gp = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        gp.pNext = &ri; gp.stageCount = 2; gp.pStages = st; gp.pVertexInputState = &vi; gp.pInputAssemblyState = &ia;
+        gp.pViewportState = &vp; gp.pRasterizationState = &rs; gp.pMultisampleState = &ms; gp.pDepthStencilState = &ds;
+        gp.pColorBlendState = &cb; gp.pDynamicState = &dy; gp.layout = scenePL;
+        VKC(vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &oitResolvePipe));
+        vkDestroyShaderModule(dev, vs, nullptr); vkDestroyShaderModule(dev, fs, nullptr);
+    }
+    oitCounter = gfx.createBuffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    {
+        VkDescriptorBufferInfo bi = {oitCounter.buf, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet = sceneSet; w.dstBinding = 14; w.descriptorCount = 1; w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w.pBufferInfo = &bi;
+        vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
+    }
 
     // the post pipeline depends on the swapchain format: created with the targets
     bloomPipe = makeFullscreenPipeline(bloom_frag_spv, sizeof(bloom_frag_spv), kLightFmt, VK_FORMAT_UNDEFINED);
@@ -183,10 +234,11 @@ VkPipeline Renderer::makeFullscreenPipeline(const uint32_t *fsCode, size_t fsByt
     return pipe;
 }
 
-VkPipeline Renderer::makeScenePipeline(Pipe p, bool rt) {
+VkPipeline Renderer::makeScenePipeline(Pipe p, bool rt, bool oit) {
     VkDevice dev = gfx.dev;
     VkShaderModule vs = gfx.shader(scene_vert_spv, sizeof(scene_vert_spv));
-    VkShaderModule fs = rt ? gfx.shader(scene_rt_frag_spv, sizeof(scene_rt_frag_spv)) : gfx.shader(scene_frag_spv, sizeof(scene_frag_spv));
+    VkShaderModule fs = oit ? (rt ? gfx.shader(scene_rt_oit_frag_spv, sizeof(scene_rt_oit_frag_spv)) : gfx.shader(scene_oit_frag_spv, sizeof(scene_oit_frag_spv)))
+                            : (rt ? gfx.shader(scene_rt_frag_spv, sizeof(scene_rt_frag_spv)) : gfx.shader(scene_frag_spv, sizeof(scene_frag_spv)));
     VkPipelineShaderStageCreateInfo st[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
     st[0].stage = VK_SHADER_STAGE_VERTEX_BIT; st[0].module = vs; st[0].pName = "main";
     st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = fs; st[1].pName = "main";
@@ -208,7 +260,7 @@ VkPipeline Renderer::makeScenePipeline(Pipe p, bool rt) {
     ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     VkPipelineColorBlendAttachmentState ba[4] = {};
     bool blend = p == P_BLEND || p == P_NOZ || p == P_BLEND_ZWRITE || p == P_ADD;
-    ba[0].colorWriteMask = p == P_SKYMASK ? 0 : 0xf;
+    ba[0].colorWriteMask = (p == P_SKYMASK || oit) ? 0 : 0xf;      // OIT variants write fragment lists, not colour
     ba[1].colorWriteMask = (p == P_OPAQUE) ? 0xf : 0;
     ba[2].colorWriteMask = (p == P_OPAQUE) ? 0xf : 0;
     ba[3].colorWriteMask = (p == P_OPAQUE) ? 0xf : 0;
@@ -241,6 +293,7 @@ void Renderer::destroyTargets() {
     gfx.destroy(sceneColor); gfx.destroy(sceneAux); gfx.destroy(sceneDepth); gfx.destroy(history[0]); gfx.destroy(history[1]);
     for (Image &b : bloom) gfx.destroy(b);
     gfx.destroy(directHist[0]); gfx.destroy(directHist[1]);
+    gfx.destroy(oitHeads); gfx.destroy(oitNodes);
     gfx.destroy(sceneIndirect); gfx.destroy(sceneLight); gfx.destroy(lightHist[0]); gfx.destroy(lightHist[1]); gfx.destroy(litColor);
 }
 
@@ -255,6 +308,9 @@ void Renderer::createTargets() {
     sceneDepth = gfx.createImage(w, h, kDepthFmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 1, VK_IMAGE_ASPECT_DEPTH_BIT);
     sceneLight = gfx.createImage(w, h, kLightFmt, use);
     sceneIndirect = gfx.createImage(w, h, kLightFmt, use);
+    oitHeads = gfx.createImage(w, h, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    oitCap = (uint32_t)std::min<uint64_t>((uint64_t)w * h * 3, 24000000ull);        // 16 bytes per stored fragment
+    oitNodes = gfx.createBuffer((VkDeviceSize)oitCap * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false);
     directHist[0] = gfx.createImage(w, h, kLightFmt, use);
     directHist[1] = gfx.createImage(w, h, kLightFmt, use);
     bloom[0] = gfx.createImage(std::max(w / 4, 1u), std::max(h / 4, 1u), kLightFmt, use);
@@ -275,7 +331,16 @@ void Renderer::createTargets() {
                      &bloom[0], &bloom[1], &bloom[2], &bloom[3], &directHist[0], &directHist[1]})
         transition(c, i->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     transition(c, sceneDepth.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+    transition(c, oitHeads.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
     gfx.endOnce(c);
+    {
+        VkDescriptorImageInfo hi = {VK_NULL_HANDLE, oitHeads.view, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorBufferInfo nb = {oitNodes.buf, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet wo[2] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+        wo[0].dstSet = sceneSet; wo[0].dstBinding = 12; wo[0].descriptorCount = 1; wo[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; wo[0].pImageInfo = &hi;
+        wo[1].dstSet = sceneSet; wo[1].dstBinding = 13; wo[1].descriptorCount = 1; wo[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; wo[1].pBufferInfo = &nb;
+        vkUpdateDescriptorSets(gfx.dev, 2, wo, 0, nullptr);
+    }
     historyValid = false;
     if (!overlayImg.img) {
         overlayImg = gfx.createImage(modeW, modeH, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
@@ -1217,6 +1282,8 @@ void Renderer::buildScene(const lr::SceneCmd &sc) {
     f.ambient[3] = (rtOn && settings.rtShadows != 0 && lampGrid.count) ? 1.0f : 0.0f;
     f.lampGrid = lampGrid;
     f.nLights = (uint32_t)lights.size();
+    f.oitCapacity = oitCap;
+    *(uint32_t *)oitCounter.mapped = 0;
     memcpy(frameBuf.mapped, &f, sizeof(f));
     memcpy(instBuf.mapped, instances.data(), instances.size() * sizeof(GInstance));
     if (!lights.empty()) memcpy(lightBuf.mapped, lights.data(), lights.size() * sizeof(GLight));
@@ -1310,7 +1377,10 @@ void Renderer::drawGroups(bool opaquePass, bool rtOn) {
             // always cover earlier ones, and each object sorts itself.
             clearDepth(); inSky = true;
         } else if (inSky) { clearDepth(); inSky = false; }
-        if (d.pipe != boundPipe) { vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes[rtOn ? 1 : 0][d.pipe]); boundPipe = d.pipe; }
+        if (d.pipe != boundPipe) {
+            VkPipeline pl = (!opaquePass && oitPipes[rtOn ? 1 : 0][d.pipe]) ? oitPipes[rtOn ? 1 : 0][d.pipe] : pipes[rtOn ? 1 : 0][d.pipe];
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl); boundPipe = d.pipe;
+        }
         if (d.view != boundView) {
             // the view model draws into the front sliver of the depth range, so it never intersects the world
             VkViewport vp = sceneViewport;
@@ -1431,12 +1501,37 @@ void Renderer::renderFrame(bool hadScene) {
         toSampled(lightHist[lh]); toSampled(directHist[lh]);
         lightHistValid = true;
 
-        // ---- 3. translucent pass over the resolved scene (depth tested, never written to aux / light)
+        // ---- 3. blended pass: every blended fragment goes into its pixel's list (depth tested against the opaque scene)
+        {
+            VkClearColorValue zero = {};
+            VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(cmd, oitHeads.img, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+        }
         toAttachment(sceneAux); toAttachment(sceneLight); toAttachment(sceneIndirect);
         transition(cmd, sceneDepth.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
         beginScenePass(litColor.view, false);
         drawGroups(false, rtOn);
         vkCmdEndRendering(cmd);
+        {   // ---- 3b. sort each pixel's fragments by depth and composite them over the lit scene
+            VkMemoryBarrier2 mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+            mb.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT; mb.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            mb.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT; mb.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            VkDependencyInfo di = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
+            vkCmdPipelineBarrier2(cmd, &di);
+            VkRenderingAttachmentInfo ca = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+            ca.imageView = litColor.view; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            ca.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO};
+            ri.renderArea = fullRect; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
+            vkCmdBeginRendering(cmd, &ri);
+            VkViewport vp = {0, 0, (float)gfx.extent.width, (float)gfx.extent.height, 0, 1};
+            vkCmdSetViewport(cmd, 0, 1, &vp); vkCmdSetScissor(cmd, 0, 1, &fullRect);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, oitResolvePipe);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePL, 0, 1, &sceneSet, 0, nullptr);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+            vkCmdEndRendering(cmd);
+        }
         toSampled(litColor); toSampled(sceneAux); toSampled(sceneLight); toSampled(sceneIndirect);
         transition(cmd, sceneDepth.img, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
 

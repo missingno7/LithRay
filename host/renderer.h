@@ -29,7 +29,7 @@ struct GFrame {
     float skyEye[4];
     float ambient[4];           // rgb: the level's lightmap ambient (minimum texel), a: lamp shadows enabled
     GLampGrid lampGrid;
-    uint32_t nLights, pad[3];
+    uint32_t nLights, oitCapacity, pad[2];
 };
 static_assert(sizeof(GVertex) == 48 && sizeof(GInstance) == 160, "gpu layout");
 
@@ -88,7 +88,7 @@ private:
     void createStatic();
     void createTargets();
     void destroyTargets();
-    VkPipeline makeScenePipeline(Pipe p, bool rt);
+    VkPipeline makeScenePipeline(Pipe p, bool rt, bool oit = false);
     void buildScene(const lr::SceneCmd &sc);
     void addWorldDraws(const lr::SceneCmd &sc);
     void addObject(const lr::SceneCmd &sc, const lr::ObjectRecord &o);
@@ -120,6 +120,9 @@ private:
     VkDescriptorSet sceneSet = VK_NULL_HANDLE, postSet[2] = {}, composeSet[2] = {};
     VkPipelineLayout scenePL = VK_NULL_HANDLE, postPL = VK_NULL_HANDLE;
     VkPipeline pipes[2][P_COUNT] = {}, postPipe = VK_NULL_HANDLE, composePipe = VK_NULL_HANDLE;
+    // order-independent transparency: blended draws store their fragments per pixel, a resolve sorts and composites them
+    VkPipeline oitPipes[2][P_COUNT] = {}, oitResolvePipe = VK_NULL_HANDLE;
+    Image oitHeads; Buffer oitNodes, oitCounter; uint32_t oitCap = 0;
     VkSampler sampler = VK_NULL_HANDLE, clampSampler = VK_NULL_HANDLE, nearestSampler = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
